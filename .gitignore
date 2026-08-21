@@ -13,7 +13,7 @@ work-server/.env
 work-server/data/
 *.log
 
-# 根目录非代码交付物
-*.zip
-*.xlsx
-*.png
+# 根目录非代码交付物（仅忽略根目录，不影响源码内的图片资源）
+/*.zip
+/*.xlsx
+/*.png
