@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { callTool } from '../services/mcp.js'
 import { getAI } from '../services/settings.js'
+import { listMembers } from '../services/dingtalk-table.js'
 import { AiTimeoutError, chat, systemPrompt } from '../services/llm.js'
 import { asyncRoute, fail, ok } from '../utils/respond.js'
 
@@ -23,11 +24,20 @@ router.post(
       return fail(res, 'AI 未启用：请管理员在「设置」页配置智谱 API Key 并打开 AI 开关')
     }
 
-    // 团队类问题需要管理员身份
+    // 团队类问题需要管理员身份；管理员问到具体成员姓名时也自动升级为团队数据
     const wantsTeam = /团队|大家|全员|组内|所有人/.test(question)
-    const team = wantsTeam && user.isAdmin
+    let team = wantsTeam && user.isAdmin
     if (wantsTeam && !user.isAdmin) {
       return ok(res, '团队维度的数据仅管理员可查询，你可以问我「我本周完成了哪些任务」等个人问题。')
+    }
+    if (!team && user.isAdmin) {
+      try {
+        const members = await listMembers(user.unionId, user.projectId)
+        const hit = members.some((m) => m.name && m.name !== user.name && question.includes(m.name))
+        if (hit) team = true
+      } catch {
+        /* 成员表读取失败不影响默认个人范围 */
+      }
     }
 
     // MCP 工具获取实时数据上下文
