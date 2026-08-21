@@ -48,11 +48,12 @@ function scrollToBottom() {
 }
 
 /* 键盘适配：钉钉webview键盘弹出时页面会被压缩/遮挡，输入框随屏滚动。
-   与App.vue同款判定：记录启动基准高度，骤降120px视为键盘弹出，
-   弹起时把页面高度锁到当前可视高度，输入框稳贴键盘上方 */
+   挂载即初始化基准高度（否则首次弹键盘时基准被压低、判定失效）；
+   focus/blur 后短轮询兜底（部分webview的resize事件时序不稳） */
 const kbOpen = ref(false)
 const pageH = ref('')
 let baseH = 0
+let pollTimer = null
 
 function checkKb() {
   const vv = window.visualViewport
@@ -64,9 +65,23 @@ function checkKb() {
   if (open) scrollToBottom()
 }
 
+/** 聚焦/失焦后轮询一段时间，确保捕获键盘动画全过程 */
+function pollKb(ms) {
+  clearInterval(pollTimer)
+  const end = Date.now() + ms
+  pollTimer = setInterval(() => {
+    checkKb()
+    if (Date.now() >= end) clearInterval(pollTimer)
+  }, 250)
+}
+
+const onInputFocus = () => pollKb(2000)
+const onInputBlur = () => pollKb(1200)
+
 function bindKeyboard() {
   window.visualViewport?.addEventListener('resize', checkKb)
   window.addEventListener('resize', checkKb)
+  checkKb() // 立即初始化基准高度
 }
 
 onMounted(async () => {
@@ -84,6 +99,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.visualViewport?.removeEventListener('resize', checkKb)
   window.removeEventListener('resize', checkKb)
+  clearInterval(pollTimer)
 })
 </script>
 
@@ -132,6 +148,8 @@ onBeforeUnmount(() => {
         autosize
         maxlength="200"
         placeholder="问点什么，如：本周我完成了哪些任务？"
+        @focus="onInputFocus"
+        @blur="onInputBlur"
         @keyup.enter.prevent="send()"
       />
       <van-button

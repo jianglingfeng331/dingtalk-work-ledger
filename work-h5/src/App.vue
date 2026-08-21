@@ -86,6 +86,14 @@ onBeforeUnmount(() => {
 body.kb-open .chat-footer {
   margin-bottom: 8px !important;
 }
+
+/* 键盘弹起时锁定页面滚动：页面高度已锁到可视区，若外层仍可滚
+   （app-shell min-height:100vh 在键盘不缩vh的webview下偏大），
+   拖动会把贴在键盘上的输入框拖走 */
+body.kb-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 </style>
 
 <style scoped>
