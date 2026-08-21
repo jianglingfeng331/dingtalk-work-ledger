@@ -1,4 +1,5 @@
 import { listRecords } from './store.js'
+import { listMembers, listTasks } from './dingtalk-table.js'
 
 /**
  * MCP（Model Context Protocol）工具层
@@ -46,6 +47,25 @@ const tools = [
         }
       })
     },
+  },
+  {
+    // 任务表实时拉取（钉钉AI表格）；失败由调用方容错，不阻断AI查询
+    name: 'get_tasks',
+    description: '查询项目任务表（工作安排）：任务名、负责人、状态、计划节点、任务分类',
+    inputSchema: {
+      type: 'object',
+      properties: { owner: { type: 'string', description: '按负责人姓名过滤（可选）' } },
+    },
+    handler: async ({ user, owner = '' }) => {
+      const tasks = await listTasks(user.unionId, user.projectId)
+      return owner ? tasks.filter((t) => t.owner?.includes(owner)) : tasks
+    },
+  },
+  {
+    name: 'get_members',
+    description: '查询项目成员表：成员姓名与角色',
+    inputSchema: { type: 'object', properties: {} },
+    handler: ({ user }) => listMembers(user.unionId, user.projectId),
   },
 ]
 

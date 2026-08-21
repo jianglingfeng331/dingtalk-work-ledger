@@ -42,10 +42,22 @@ router.post(
 
     // MCP 工具获取实时数据上下文
     const records = await callTool('get_work_records', { user, scope: 'all', team })
-    if (!records.length) {
-      return ok(res, '当前还没有工作记录，先去「工作记录」页随手记一条吧。')
-    }
     const stats = await callTool('get_work_stats', { user, team })
+    // 任务表/成员表实时拉取（失败不阻断，仅少一段上下文）
+    let tasks = []
+    let members = []
+    try {
+      ;[tasks, members] = await Promise.all([
+        callTool('get_tasks', { user }),
+        callTool('get_members', { user }),
+      ])
+    } catch (err) {
+      console.warn('[ai] 任务表/成员表拉取失败:', err?.message)
+    }
+
+    if (!records.length && !tasks.length) {
+      return ok(res, '当前还没有工作记录和任务，先去「工作记录」页随手记一条吧。')
+    }
 
     // LLM 推理：台账数据作为上下文注入（45s 预算，含限流退避与备用模型切换）
     const dataContext = [
@@ -60,6 +72,18 @@ router.post(
           (r) =>
             `- ${r.taskDate} [${r.progress}][工时${r.hours ?? '-'}] ${r.recorder}: ${r.title}｜原始内容: ${r.rawContent}｜标签: ${r.tags.join('、') || '无'}`,
         ),
+      members.length
+        ? `\n【项目成员｜共${members.length}人】\n${members.map((m) => `- ${m.name}${m.roles?.length ? `（${m.roles.join('、')}）` : ''}`).join('\n')}`
+        : '',
+      tasks.length
+        ? `\n【任务表｜共${tasks.length}项｜字段: 任务名/负责人/状态/计划节点/任务分类】\n${tasks
+            .slice(0, 80)
+            .map(
+              (t) =>
+                `- ${t.title}｜负责人:${t.owner || '未定'}｜状态:${t.status || '未定'}｜节点:${t.planDate || '未定'}｜分类:${t.category || '未定'}`,
+            )
+            .join('\n')}${tasks.length > 80 ? `\n（仅展示前80项，共${tasks.length}项）` : ''}`
+        : '',
     ]
       .filter(Boolean)
       .join('\n')

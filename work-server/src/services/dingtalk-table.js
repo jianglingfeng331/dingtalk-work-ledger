@@ -209,12 +209,15 @@ export async function listTasks(operatorId, projectId = '') {
       const st = row.fields?.['状态']
       const status = st?.name ?? (typeof st === 'string' ? st : '')
       const planRaw = row.fields?.['计划节点']
+      const catRaw = row.fields?.['任务分类']
+      const category = catRaw?.name ?? (typeof catRaw === 'string' ? catRaw : '')
       list.push({
         recordId: row.id,
         title: title.trim(),
         owner,
         status,
         planDate: typeof planRaw === 'number' ? toPlainDate(planRaw) : '',
+        category,
       })
     }
     nextToken = data?.nextToken || ''
