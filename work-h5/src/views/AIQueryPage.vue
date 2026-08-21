@@ -47,22 +47,26 @@ function scrollToBottom() {
   })
 }
 
-/* 键盘适配：钉钉webview键盘弹出时 dvh 不缩，输入框会被键盘盖住。
-   监听 visualViewport，弹起时把页面高度锁到可视区，输入框稳贴键盘上方 */
+/* 键盘适配：钉钉webview键盘弹出时页面会被压缩/遮挡，输入框随屏滚动。
+   与App.vue同款判定：记录启动基准高度，骤降120px视为键盘弹出，
+   弹起时把页面高度锁到当前可视高度，输入框稳贴键盘上方 */
 const kbOpen = ref(false)
 const pageH = ref('')
-let onVvResize = null
+let baseH = 0
+
+function checkKb() {
+  const vv = window.visualViewport
+  const h = vv ? vv.height : window.innerHeight
+  if (!baseH) baseH = Math.max(window.innerHeight, h)
+  const open = baseH - h > 120
+  kbOpen.value = open
+  pageH.value = open ? `${Math.round(h)}px` : ''
+  if (open) scrollToBottom()
+}
 
 function bindKeyboard() {
-  const vv = window.visualViewport
-  if (!vv) return
-  onVvResize = () => {
-    const drop = window.innerHeight - vv.height
-    kbOpen.value = drop > 120
-    pageH.value = kbOpen.value ? `${Math.round(vv.height)}px` : ''
-    if (kbOpen.value) scrollToBottom()
-  }
-  vv.addEventListener('resize', onVvResize)
+  window.visualViewport?.addEventListener('resize', checkKb)
+  window.addEventListener('resize', checkKb)
 }
 
 onMounted(async () => {
@@ -78,7 +82,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  if (onVvResize && window.visualViewport) window.visualViewport.removeEventListener('resize', onVvResize)
+  window.visualViewport?.removeEventListener('resize', checkKb)
+  window.removeEventListener('resize', checkKb)
 })
 </script>
 
