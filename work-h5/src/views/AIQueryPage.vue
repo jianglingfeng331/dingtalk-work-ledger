@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { aiQuery, getSettings, runtime } from '../api'
 import { initUser } from '../utils/user'
 import avatarImg from '../assets/ai-avatar.png'
@@ -47,8 +47,27 @@ function scrollToBottom() {
   })
 }
 
+/* 键盘适配：钉钉webview键盘弹出时 dvh 不缩，输入框会被键盘盖住。
+   监听 visualViewport，弹起时把页面高度锁到可视区，输入框稳贴键盘上方 */
+const kbOpen = ref(false)
+const pageH = ref('')
+let onVvResize = null
+
+function bindKeyboard() {
+  const vv = window.visualViewport
+  if (!vv) return
+  onVvResize = () => {
+    const drop = window.innerHeight - vv.height
+    kbOpen.value = drop > 120
+    pageH.value = kbOpen.value ? `${Math.round(vv.height)}px` : ''
+    if (kbOpen.value) scrollToBottom()
+  }
+  vv.addEventListener('resize', onVvResize)
+}
+
 onMounted(async () => {
   initUser()
+  bindKeyboard()
   // 拉取动态配置的快捷提问
   try {
     const res = await getSettings()
@@ -57,10 +76,14 @@ onMounted(async () => {
     /* 保持默认 */
   }
 })
+
+onBeforeUnmount(() => {
+  if (onVvResize && window.visualViewport) window.visualViewport.removeEventListener('resize', onVvResize)
+})
 </script>
 
 <template>
-  <div class="page ai-page">
+  <div class="page ai-page" :style="pageH ? { height: pageH } : {}">
     <header class="page-header ai-header">
       <div class="header-top">
         <div>
@@ -95,7 +118,7 @@ onMounted(async () => {
     </div>
 
     <!-- 输入区 -->
-    <footer class="chat-footer safe-bottom">
+    <footer class="chat-footer safe-bottom" :class="{ 'kb-open': kbOpen }">
       <van-field
         v-model="input"
         class="chat-input"
@@ -250,6 +273,11 @@ onMounted(async () => {
   padding: 8px 12px;
   margin-bottom: calc(50px + env(safe-area-inset-bottom));
   background: var(--page-bg);
+}
+
+/* 键盘弹出：底部导航已隐藏（App.vue），去掉预留间距让输入框贴住键盘上沿 */
+.chat-footer.kb-open {
+  margin-bottom: 0;
 }
 
 .chat-input {
