@@ -1,0 +1,25 @@
+{
+  "name": "work-h5",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vant/touch-emulator": "^1.5.0",
+    "axios": "^1.19.0",
+    "vant": "^4.10.0",
+    "vue": "^3.5.40",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vant/auto-import-resolver": "^1.3.0",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "postcss-px-to-viewport-8-plugin": "^1.2.5",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^8.2.0"
+  }
+}

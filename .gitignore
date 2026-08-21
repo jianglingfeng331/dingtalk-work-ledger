@@ -1,0 +1,19 @@
+# 系统/编辑器
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# 依赖与构建产物（子项目各有 .gitignore，此处兜底）
+node_modules/
+dist/
+
+# 运行时数据与密钥（绝不入库：钉钉凭据/AI Key/业务数据）
+work-server/.env
+work-server/data/
+*.log
+
+# 根目录非代码交付物
+*.zip
+*.xlsx
+*.png
