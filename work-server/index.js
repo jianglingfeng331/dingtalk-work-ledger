@@ -44,6 +44,13 @@ app.use('/api', auth, projectsRoutes)
 // 本地一体化部署：托管前端构建产物（work-h5/dist），单端口访问
 const DIST = path.resolve(__dirname, '../work-h5/dist')
 if (fs.existsSync(DIST)) {
+  // 静态资源访问日志：排查钉钉webview加载了哪个版本的JS（定位缓存/发版问题）
+  app.use('/assets', (req, res, next) => {
+    if (/\.(js|css)$/.test(req.path)) {
+      console.log(`[static] ${new Date().toLocaleTimeString('zh-CN')} ${req.path} <- ${req.ip}`)
+    }
+    next()
+  })
   app.use(
     express.static(DIST, {
       // 带哈希文件名的构建产物可永久缓存；HTML 每次回源校验，
