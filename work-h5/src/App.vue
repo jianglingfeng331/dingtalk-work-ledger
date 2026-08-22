@@ -82,19 +82,8 @@ onBeforeUnmount(() => {
   display: block;
 }
 
-/* 键盘弹起（body.kb-open）：导航已隐藏，输入区下 margin 同步收掉，贴住键盘 */
-body.kb-open .chat-footer {
-  margin-bottom: 8px !important;
-}
-
-/* 键盘弹起时锁死页面：body fixed 彻底杜绝 webview 自身滚动
-   （overflow:hidden 对部分钉钉安卓webview的视口滚动无效，拖动会带走输入框） */
-body.kb-open {
-  position: fixed;
-  inset: 0;
-  overflow: hidden;
-  overscroll-behavior: none;
-}
+/* body.kb-open 仅作标记（tabbar 隐藏由 kbOpen ref 驱动 v-show）。
+   v10 起 AI 查询页用 visualViewport 锚定 fixed 输入框，无需锁定 body 滚动。 */
 </style>
 
 <style scoped>

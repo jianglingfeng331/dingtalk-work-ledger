@@ -47,14 +47,15 @@ function scrollToBottom() {
   })
 }
 
-/* 键盘适配 v8 三分支全覆盖（钉钉安卓webview行为不可预知）：
-   A. 视口会压缩（resizes-content/正常resize）→ 轮询测到高度骤降 → 锁页高，输入框贴键盘上方
-   B. 完全无事件（覆盖式键盘，盖住底部）→ 1秒内没测到压缩 → 输入框钉到页面顶部（键盘永远盖不住顶部）
-   C. iOS正常行为 → 走A分支
-   blur后统一收起。诊断徽标显示当前命中分支，便于远程定位。 */
+/* 键盘适配 v10：visualViewport 锚定（业界标准做法，放弃锁页高/锁滚动）
+   输入框键盘态下改为 fixed，bottom = innerHeight - (vv.height + vv.offsetTop)。
+   数学上：压缩式键盘（ICB缩小）该值=0，输入框贴 ICB 底=键盘上沿；
+   平移式键盘（ICB不变、页面被下滚）该值仍=键盘上沿。两种 webview 通吃，
+   且不锁定页面滚动，对话区照常滚动，不存在"输入框被锁在键盘下"的死角。
+   兜底：若 1.2s 内视口完全无变化（纯覆盖式键盘），输入框钉到页面顶部。 */
 const kbOpen = ref(false)
-const kbMode = ref('') // '' | 'shrink'(A) | 'top'(B)
-const pageH = ref('')
+const kbMode = ref('') // '' | 'vv'(锚定) | 'top'(纯覆盖兜底)
+const footerBottom = ref(0)
 let baseH = 0
 let pollTimer = null
 let topTimer = null
@@ -64,36 +65,36 @@ function measureH() {
   return vv ? vv.height : window.innerHeight
 }
 
-function applyShrink(h) {
-  if (kbMode.value !== 'shrink') scrollToBottom()
-  kbMode.value = 'shrink'
-  pageH.value = `${Math.round(h)}px`
-  // 平移式键盘：原生聚焦会把窗口滚下去，页面锁短后内容悬在文档顶部，
-  // 必须持续把窗口滚回0，否则看到的是空白、要手动拖
-  window.scrollTo(0, 0)
+/** 依据可视视口实时计算输入框距 ICB 底部的偏移（=键盘高度） */
+function anchorFooter() {
+  const vv = window.visualViewport
+  if (!vv) return
+  footerBottom.value = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)))
 }
 
 function pollKb(ms) {
   clearInterval(pollTimer)
   const end = Date.now() + ms
   pollTimer = setInterval(() => {
-    const h = measureH()
-    if (baseH - h > 120) applyShrink(h)
+    anchorFooter()
+    // 视口压缩过（说明vv在正常上报）→ 正常锚定模式
+    if (kbOpen.value && baseH - measureH() > 120) kbMode.value = 'vv'
     if (Date.now() >= end) clearInterval(pollTimer)
   }, 200)
 }
 
 const onInputFocus = () => {
   if (!baseH) baseH = Math.max(window.innerHeight, measureH())
-  kbOpen.value = true // 立即进入键盘态：收导航间距+锁body滚动
-  document.body.classList.add('kb-open') // body fixed：物理消除窗口滚动（本页面自主管理，不依赖App.vue的resize事件）
-  window.scrollTo(0, 0)
+  kbOpen.value = true
+  kbMode.value = 'vv'
+  anchorFooter()
+  scrollToBottom()
   pollKb(3000)
-  // 覆盖式键盘兜底：整个弹出期测不到视口压缩，就把输入框钉到顶部
+  // 纯覆盖式键盘兜底：视口毫无变化则钉顶
   clearTimeout(topTimer)
   topTimer = setTimeout(() => {
-    if (kbOpen.value && !pageH.value) kbMode.value = 'top'
-  }, 1000)
+    if (kbOpen.value && baseH - measureH() <= 120) kbMode.value = 'top'
+  }, 1200)
 }
 
 const onInputBlur = () => {
@@ -101,13 +102,15 @@ const onInputBlur = () => {
   setTimeout(() => {
     kbOpen.value = false
     kbMode.value = ''
-    pageH.value = ''
-    document.body.classList.remove('kb-open')
-  }, 1200)
+    footerBottom.value = 0
+    window.scrollTo(0, 0) // 平移式键盘收起后窗口可能停在滚动偏移上，复位
+  }, 300)
 }
 
 function bindKeyboard() {
-  // focus/blur+轮询已覆盖事件路径，这里只负责初始化基准高度
+  // vv 的 resize/scroll 事件期间持续锚定（scroll 在平移式键盘的原生滚动中就会触发）
+  window.visualViewport?.addEventListener('resize', anchorFooter)
+  window.visualViewport?.addEventListener('scroll', anchorFooter)
   if (!baseH) baseH = Math.max(window.innerHeight, measureH())
 }
 
@@ -124,24 +127,24 @@ onMounted(async () => {
 })
 
 onDeactivated(() => {
-  // keep-alive 切走页面：键盘若还开着，收掉并清类，避免其他页面被锁滚动
+  // keep-alive 切走页面：键盘态立即复位，避免fixed输入框残留
   clearInterval(pollTimer)
   clearTimeout(topTimer)
   kbOpen.value = false
   kbMode.value = ''
-  pageH.value = ''
-  document.body.classList.remove('kb-open')
+  footerBottom.value = 0
 })
 
 onBeforeUnmount(() => {
   clearInterval(pollTimer)
   clearTimeout(topTimer)
-  document.body.classList.remove('kb-open')
+  window.visualViewport?.removeEventListener('resize', anchorFooter)
+  window.visualViewport?.removeEventListener('scroll', anchorFooter)
 })
 </script>
 
 <template>
-  <div class="page ai-page" :style="pageH ? { height: pageH } : {}">
+  <div class="page ai-page">
     <header class="page-header ai-header">
       <div class="header-top">
         <div>
@@ -149,13 +152,13 @@ onBeforeUnmount(() => {
           <p class="page-subtitle">自然语言查询台账 · 统计与复盘</p>
         </div>
         <van-tag v-if="runtime.mockMode" plain type="warning" size="medium">演示模式</van-tag>
-        <!-- 键盘诊断徽标（定位webview行为用，稳定后移除） -->
-        <van-tag v-if="kbOpen" plain size="medium" class="kb-badge">v8·{{ kbMode || 'wait' }}</van-tag>
+        <!-- 键盘诊断徽标（定位webview行为用，稳定后移除）：显示锚定模式与实时偏移 -->
+        <van-tag v-if="kbOpen" plain size="medium" class="kb-badge">v10·{{ kbMode }}·{{ footerBottom }}</van-tag>
       </div>
     </header>
 
     <!-- 对话区 -->
-    <div ref="listEl" class="chat-area">
+    <div ref="listEl" class="chat-area" :class="{ 'kb-pad': kbOpen }">
       <div v-for="(msg, i) in messages" :key="i" class="msg-row" :class="msg.role">
         <img v-if="msg.role === 'ai'" :src="avatarImg" class="ai-avatar" alt="AI老谢" />
         <div class="bubble" :class="msg.role">
@@ -177,8 +180,12 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 输入区 -->
-    <footer class="chat-footer safe-bottom" :class="{ 'kb-open': kbOpen, 'kb-top': kbMode === 'top' }">
+    <!-- 输入区：键盘态改为 fixed 并锚定到键盘上沿（visualViewport 实时计算） -->
+    <footer
+      class="chat-footer safe-bottom"
+      :class="{ 'kb-fixed': kbOpen && kbMode !== 'top', 'kb-top': kbOpen && kbMode === 'top' }"
+      :style="kbOpen && kbMode !== 'top' ? { bottom: `${footerBottom}px` } : {}"
+    >
       <van-field
         v-model="input"
         class="chat-input"
@@ -337,12 +344,18 @@ onBeforeUnmount(() => {
   background: var(--page-bg);
 }
 
-/* 键盘弹出：底部导航已隐藏（App.vue），去掉预留间距让输入框贴住键盘上沿 */
-.chat-footer.kb-open {
-  margin-bottom: 8px;
+/* 键盘态：输入框脱离文档流，fixed 锚定键盘上沿（bottom 由 JS 按 visualViewport 实时计算） */
+.chat-footer.kb-fixed {
+  position: fixed;
+  left: 0;
+  right: 0;
+  margin-bottom: 0;
+  z-index: 100;
+  background: var(--page-bg);
+  box-shadow: 0 -2px 8px rgba(31, 45, 61, 0.06);
 }
 
-/* 覆盖式键盘兜底：视口不压缩时输入框钉到头部下方，键盘永远盖不住页面顶部 */
+/* 纯覆盖式键盘兜底：视口不缩时输入框钉到头部下方，键盘永远盖不住页面顶部 */
 .chat-footer.kb-top {
   position: fixed;
   top: 76px;
@@ -350,9 +363,17 @@ onBeforeUnmount(() => {
   right: 12px;
   bottom: auto;
   margin: 0;
-  z-index: 60;
+  z-index: 100;
   border-radius: 12px;
   box-shadow: 0 4px 16px rgba(22, 119, 255, 0.18);
+}
+
+/* 键盘态对话区底部让位，最后一条消息不被 fixed 输入框盖住 */
+.chat-area {
+  transition: padding-bottom 0.15s;
+}
+.chat-area.kb-pad {
+  padding-bottom: 96px;
 }
 
 .kb-badge {
