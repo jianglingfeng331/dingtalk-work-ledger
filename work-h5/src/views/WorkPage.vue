@@ -66,7 +66,7 @@ function setFilter(f) {
  * 三级引擎：WebSpeech 实时上屏 → 浏览器录音+云端转写 → 钉钉JSAPI录音+钉钉转写（容器内兜底）
  */
 import { transcribeWav, WavRecorder } from '../utils/recorder'
-import { DdAudioRecorder } from '../utils/dingtalk'
+import { DdAudioRecorder, ensureJsapiReady, isDingTalkEnv } from '../utils/dingtalk'
 import { getToken } from '../utils/user'
 
 const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
@@ -78,6 +78,8 @@ let recognition = null
 let pressTimer = null
 let wavRecorder = null
 let ddRecorder = null
+let pendingStop = false // 松开时引擎尚未就绪：挂起，引擎就绪后立即停止+转写
+let switchingCloud = false // switchToCloud 进行中（JSAPI签名/config 约需1-2秒）
 
 function onTouchStart(e) {
   if (e.cancelable) e.preventDefault()
@@ -136,38 +138,125 @@ function tryStartWebSpeech() {
   }
 }
 
+/** 钉钉JSAPI录音：停止并转写，成功后填入输入框 */
+function finishDd(rec) {
+  transcribing.value = true
+  ;(async () => {
+    try {
+      const text = await rec.stopTranscribe()
+      if (text) {
+        content.value = text
+        showToast('识别完成，可润色或直接拆解')
+      } else {
+        showToast('说话时间太短，请重试')
+      }
+    } catch (err) {
+      showToast(err?.message || '语音识别失败')
+    } finally {
+      transcribing.value = false
+    }
+  })()
+}
+
+/** 浏览器录音：停止并云端转写，成功后填入输入框 */
+function finishCloud(rec) {
+  transcribing.value = true
+  ;(async () => {
+    try {
+      const wav = await rec.stopWav()
+      if (!wav) {
+        showToast('说话时间太短，请重试')
+        return
+      }
+      const text = await transcribeWav(wav, getToken())
+      if (text) {
+        content.value = text
+        showToast('识别完成，可润色或直接拆解')
+      } else {
+        showToast('没有识别到内容，请重试')
+      }
+    } catch (err) {
+      showToast(err?.message || '语音识别失败')
+    } finally {
+      transcribing.value = false
+    }
+  })()
+}
+
+/** 挂起中但引擎启动失败：解除挂起状态（错误提示由调用方toast） */
+function cancelPendingStop() {
+  if (!pendingStop) return
+  pendingStop = false
+  transcribing.value = false
+}
+
+/** 引擎就绪后若用户已松开：立即停止录音并转写（修复"录音完成文字没填入"的时序竞态） */
+function settlePending() {
+  if (!pendingStop) return
+  pendingStop = false
+  if (engine.value === 'dd' && ddRecorder) {
+    const rec = ddRecorder
+    ddRecorder = null
+    finishDd(rec)
+  } else if (engine.value === 'cloud' && wavRecorder) {
+    const rec = wavRecorder
+    wavRecorder = null
+    finishCloud(rec)
+  } else {
+    transcribing.value = false
+  }
+}
+
 /** 切换云端录音引擎（按住期间无缝切换）：浏览器录音优先，钉钉容器内兜底 JSAPI */
 async function switchToCloud() {
-  // 引擎2：浏览器录音（getUserMedia+MediaRecorder）
-  if (WavRecorder.supported()) {
-    try {
-      await stopWebSpeechQuietly()
-      wavRecorder = new WavRecorder()
-      await wavRecorder.start()
-      engine.value = 'cloud'
-      return
-    } catch (err) {
-      console.warn('[voice] 浏览器录音失败，尝试钉钉JSAPI:', err?.message)
+  switchingCloud = true
+  try {
+    // 引擎2：浏览器录音（getUserMedia+MediaRecorder）
+    if (WavRecorder.supported()) {
+      try {
+        await stopWebSpeechQuietly()
+        wavRecorder = new WavRecorder()
+        await wavRecorder.start()
+        engine.value = 'cloud'
+        settlePending()
+        return
+      } catch (err) {
+        console.warn('[voice] 浏览器录音失败，尝试钉钉JSAPI:', err?.message)
+      }
     }
-  }
-  // 引擎3：钉钉 JSAPI 录音（webview 无浏览器录音 API 的设备）
-  if (DdAudioRecorder.supported()) {
-    try {
-      await stopWebSpeechQuietly()
-      ddRecorder = new DdAudioRecorder()
-      await ddRecorder.start()
-      engine.value = 'dd'
-      return
-    } catch (err) {
-      console.warn('[voice] 钉钉JSAPI录音失败:', err?.message)
-      ddRecorder = null
-      recognizing.value = false
-      showToast(err?.message || '录音启动失败，请重试')
-      return
+    // 引擎3：钉钉 JSAPI 录音（webview 无浏览器录音 API 的设备）
+    if (DdAudioRecorder.supported()) {
+      try {
+        await stopWebSpeechQuietly()
+        ddRecorder = new DdAudioRecorder()
+        // 达60秒上限钉钉自动结束：视同松开，直接转写填入
+        ddRecorder.onAutoEnd = () => {
+          if (engine.value === 'dd' && ddRecorder) {
+            const rec = ddRecorder
+            ddRecorder = null
+            recognizing.value = false
+            finishDd(rec)
+          }
+        }
+        await ddRecorder.start()
+        engine.value = 'dd'
+        settlePending()
+        return
+      } catch (err) {
+        console.warn('[voice] 钉钉JSAPI录音失败:', err?.message)
+        ddRecorder = null
+        recognizing.value = false
+        cancelPendingStop()
+        showToast(err?.message || '录音启动失败，请重试')
+        return
+      }
     }
+    recognizing.value = false
+    cancelPendingStop()
+    showToast('当前环境不支持录音，请升级钉钉到最新版后重试')
+  } finally {
+    switchingCloud = false
   }
-  recognizing.value = false
-  showToast('当前环境不支持录音，请升级钉钉到最新版后重试')
 }
 
 async function stopWebSpeechQuietly() {
@@ -191,52 +280,26 @@ function stopSpeech() {
 
   if (engine.value === 'dd' && ddRecorder) {
     recognizing.value = false
-    transcribing.value = true
     const rec = ddRecorder
     ddRecorder = null
-    ;(async () => {
-      try {
-        const text = await rec.stopTranscribe()
-        if (text) {
-          content.value = text
-          showToast('识别完成，可润色或直接拆解')
-        } else {
-          showToast('说话时间太短，请重试')
-        }
-      } catch (err) {
-        showToast(err?.message || '语音识别失败')
-      } finally {
-        transcribing.value = false
-      }
-    })()
+    finishDd(rec)
     return
   }
 
   if (engine.value === 'cloud' && wavRecorder) {
     recognizing.value = false
-    transcribing.value = true
     const rec = wavRecorder
     wavRecorder = null
-    ;(async () => {
-      try {
-        const wav = await rec.stopWav()
-        if (!wav) {
-          showToast('说话时间太短，请重试')
-          return
-        }
-        const text = await transcribeWav(wav, getToken())
-        if (text) {
-          content.value = text
-          showToast('识别完成，可润色或直接拆解')
-        } else {
-          showToast('没有识别到内容，请重试')
-        }
-      } catch (err) {
-        showToast(err?.message || '语音识别失败')
-      } finally {
-        transcribing.value = false
-      }
-    })()
+    finishCloud(rec)
+    return
+  }
+
+  // 引擎尚未就绪（JSAPI签名/dd.config 进行中，约1-2秒）：挂起，引擎一就绪立即停止+转写。
+  // 否则松开会被当作无事发生，录音空转到60秒上限自动结束、文字永远不填入。
+  if (!engine.value && switchingCloud) {
+    pendingStop = true
+    recognizing.value = false
+    transcribing.value = true
     return
   }
 
@@ -421,6 +484,8 @@ async function confirmSubmit() {
 }
 
 onMounted(async () => {
+  // 预热钉钉JSAPI鉴权（取签名+dd.config约1-2秒）：进页面就做，长按时录音可立即启动
+  if (isDingTalkEnv()) ensureJsapiReady().catch(() => {})
   await initUser()
   await loadMyProjects() // 项目就绪（自动选中默认项目）后再查询，避免首启空项目查0条导致页面空白
   await load()

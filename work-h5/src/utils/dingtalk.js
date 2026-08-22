@@ -86,6 +86,7 @@ export function ensureJsapiReady() {
 export class DdAudioRecorder {
   constructor() {
     this.localId = ''
+    this.onAutoEnd = null // 录音达60秒上限被钉钉自动结束时的回调（外层用于补转写）
   }
 
   static supported() {
@@ -94,6 +95,16 @@ export class DdAudioRecorder {
 
   async start() {
     const dd = await ensureJsapiReady()
+    // 先注册自动结束监听：达到 maxDuration 钉钉会自动结束并回调，此时再调 stopRecord 会失败，
+    // 因此把回调里的 localId 记下，stopTranscribe 直接复用
+    dd.device.audio.onRecordEnd({
+      onSuccess: (res) => {
+        if (this.localId) return // 已被正常 stopRecord 结束
+        this.localId = res?.mediaId || res?.localId || ''
+        this.onAutoEnd?.()
+      },
+      onFail: () => {},
+    })
     await new Promise((resolve, reject) => {
       dd.device.audio.startRecord({
         maxDuration: 60,
@@ -103,15 +114,17 @@ export class DdAudioRecorder {
     })
   }
 
-  /** 结束录音并转写，返回文本（过短返回 null） */
+  /** 结束录音并转写，返回文本（过短返回 null）；已被自动结束时直接转写 */
   async stopTranscribe() {
     const dd = await ensureJsapiReady()
-    this.localId = await new Promise((resolve, reject) => {
-      dd.device.audio.stopRecord({
-        onSuccess: (res) => resolve(res?.mediaId || res?.localId || ''),
-        onFail: (err) => reject(new Error(err?.errorMessage || err?.message || '结束录音失败')),
+    if (!this.localId) {
+      this.localId = await new Promise((resolve, reject) => {
+        dd.device.audio.stopRecord({
+          onSuccess: (res) => resolve(res?.mediaId || res?.localId || ''),
+          onFail: (err) => reject(new Error(err?.errorMessage || err?.message || '结束录音失败')),
+        })
       })
-    })
+    }
     if (!this.localId) throw new Error('录音数据为空，请重试')
     const { translateText } = await new Promise((resolve, reject) => {
       dd.device.audio.translateVoice({
