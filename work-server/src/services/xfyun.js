@@ -1,10 +1,11 @@
 import crypto from 'node:crypto'
+import WebSocket from 'ws'
 import { getAsr } from './settings.js'
 
 /**
  * 讯飞语音听写（WebAPI，传统引擎非大模型，免费额度每日500次）
  * 鉴权：HMAC-SHA256 签名拼接在 WebSocket URL；音频：16k 16bit 单声道 PCM 分帧直传
- * 零第三方依赖：使用 Node 22+ 内置 WebSocket
+ * 使用 ws 包（Node 18/20/22 行为一致，不依赖新版内置 WebSocket）
  */
 
 const HOST = 'iat-api.xfyun.cn'
@@ -77,7 +78,7 @@ export function transcribe(wav) {
     }
     const timer = setTimeout(() => finish(reject, new Error(`语音识别超时（${Math.round(timeoutMs / 1000)}秒），请重试`)), timeoutMs)
 
-    ws.addEventListener('open', async () => {
+    ws.on('open', async () => {
       // 首帧：带鉴权业务参数
       ws.send(JSON.stringify({
         common: { app_id: appId },
@@ -96,9 +97,9 @@ export function transcribe(wav) {
       ws.send(JSON.stringify({ data: { status: 2 } }))
     })
 
-    ws.addEventListener('message', (ev) => {
+    ws.on('message', (buf) => {
       try {
-        const msg = JSON.parse(ev.data)
+        const msg = JSON.parse(buf.toString())
         if (msg.code !== 0) {
           return finish(reject, new Error(`讯飞识别失败(${msg.code})：${msg.message || '服务异常'}`))
         }
@@ -111,21 +112,21 @@ export function transcribe(wav) {
       } catch { /* 忽略异常帧 */ }
     })
 
-    ws.addEventListener('close', (ev) => {
+    ws.on('close', (code, reason) => {
       if (settled) return
       // 未收到结果即断开：401 为鉴权失败，其余按码透出
       if (segments.size) finish(resolve, mergeSegments(segments))
       else {
-        const hint = ev.code === 1006 || String(ev.reason).includes('401')
+        const reasonStr = reason?.toString() || ''
+        const hint = code === 1006 || reasonStr.includes('401')
           ? '鉴权失败，请检查 APPID/APIKey/APISecret'
-          : `请检查凭据与网络(close=${ev.code}${ev.reason ? ' ' + ev.reason : ''})`
+          : `请检查凭据与网络(close=${code}${reasonStr ? ' ' + reasonStr : ''})`
         finish(reject, new Error(`讯飞连接关闭：${hint}`))
       }
     })
-    // undici WS 的 error 事件不带细节（空 TypeError），其后必触发 close：
-    // 无具体信息时让 close 给出可读提示，避免双重提前出结论；兜底由超时接管
-    ws.addEventListener('error', (ev) => {
-      const detail = ev?.message || ev?.error?.message || ''
+    // ws 包的 error 带具体错误（如 Unexpected server response: 401），其后必触发 close
+    ws.on('error', (err) => {
+      const detail = err?.message || ''
       if (settled || !detail) return
       finish(reject, new Error(`讯飞连接失败：${detail}`))
     })
