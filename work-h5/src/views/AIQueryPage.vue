@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { aiQuery, getSettings, runtime } from '../api'
 import { initUser } from '../utils/user'
 import avatarImg from '../assets/ai-avatar.png'
@@ -68,6 +68,9 @@ function applyShrink(h) {
   if (kbMode.value !== 'shrink') scrollToBottom()
   kbMode.value = 'shrink'
   pageH.value = `${Math.round(h)}px`
+  // 平移式键盘：原生聚焦会把窗口滚下去，页面锁短后内容悬在文档顶部，
+  // 必须持续把窗口滚回0，否则看到的是空白、要手动拖
+  window.scrollTo(0, 0)
 }
 
 function pollKb(ms) {
@@ -83,6 +86,8 @@ function pollKb(ms) {
 const onInputFocus = () => {
   if (!baseH) baseH = Math.max(window.innerHeight, measureH())
   kbOpen.value = true // 立即进入键盘态：收导航间距+锁body滚动
+  document.body.classList.add('kb-open') // body fixed：物理消除窗口滚动（本页面自主管理，不依赖App.vue的resize事件）
+  window.scrollTo(0, 0)
   pollKb(3000)
   // 覆盖式键盘兜底：整个弹出期测不到视口压缩，就把输入框钉到顶部
   clearTimeout(topTimer)
@@ -97,6 +102,7 @@ const onInputBlur = () => {
     kbOpen.value = false
     kbMode.value = ''
     pageH.value = ''
+    document.body.classList.remove('kb-open')
   }, 1200)
 }
 
@@ -117,9 +123,20 @@ onMounted(async () => {
   }
 })
 
+onDeactivated(() => {
+  // keep-alive 切走页面：键盘若还开着，收掉并清类，避免其他页面被锁滚动
+  clearInterval(pollTimer)
+  clearTimeout(topTimer)
+  kbOpen.value = false
+  kbMode.value = ''
+  pageH.value = ''
+  document.body.classList.remove('kb-open')
+})
+
 onBeforeUnmount(() => {
   clearInterval(pollTimer)
   clearTimeout(topTimer)
+  document.body.classList.remove('kb-open')
 })
 </script>
 
