@@ -99,7 +99,9 @@ router.post(
         { budgetMs: 45_000 },
       )
       if (!answer?.trim()) return fail(res, 'AI 返回内容为空，请重试')
-      return ok(res, answer.trim())
+      // 前端纯文本展示：兜底清除 LLM 偶发输出的 Markdown 星号/井号标记
+      const clean = answer.trim().replace(/\*\*?/g, '').replace(/^#{1,6}\s*/gm, '')
+      return ok(res, clean)
     } catch (err) {
       if (err instanceof AiTimeoutError) {
         return fail(res, 'AI 查询超时（模型繁忙），请稍后重试')
