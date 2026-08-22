@@ -87,10 +87,11 @@ body.kb-open .chat-footer {
   margin-bottom: 8px !important;
 }
 
-/* 键盘弹起时锁定页面滚动：页面高度已锁到可视区，若外层仍可滚
-   （app-shell min-height:100vh 在键盘不缩vh的webview下偏大），
-   拖动会把贴在键盘上的输入框拖走 */
+/* 键盘弹起时锁死页面：body fixed 彻底杜绝 webview 自身滚动
+   （overflow:hidden 对部分钉钉安卓webview的视口滚动无效，拖动会带走输入框） */
 body.kb-open {
+  position: fixed;
+  inset: 0;
   overflow: hidden;
   overscroll-behavior: none;
 }

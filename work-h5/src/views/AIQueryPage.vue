@@ -47,9 +47,10 @@ function scrollToBottom() {
   })
 }
 
-/* 键盘适配：钉钉webview键盘弹出时页面会被压缩/遮挡，输入框随屏滚动。
-   挂载即初始化基准高度（否则首次弹键盘时基准被压低、判定失效）；
-   focus/blur 后短轮询兜底（部分webview的resize事件时序不稳） */
+/* 键盘适配（钉钉webview两难点：①部分安卓键盘弹出不触发resize事件，
+   高度判定法失效；②immutable缓存的同名JS不会重新下载，本文件改动会换哈希）。
+   策略：focus即视为键盘弹出（点输入框必弹键盘，不依赖高度事件），
+   高度由resize/轮询期间实测补充；blur即收起 */
 const kbOpen = ref(false)
 const pageH = ref('')
 let baseH = 0
@@ -65,7 +66,7 @@ function checkKb() {
   if (open) scrollToBottom()
 }
 
-/** 聚焦/失焦后轮询一段时间，确保捕获键盘动画全过程 */
+/** 键盘弹出期轮询实测高度（覆盖式键盘拿不到就保持dvh，输入框仍贴可视区底） */
 function pollKb(ms) {
   clearInterval(pollTimer)
   const end = Date.now() + ms
@@ -75,8 +76,19 @@ function pollKb(ms) {
   }, 250)
 }
 
-const onInputFocus = () => pollKb(2000)
-const onInputBlur = () => pollKb(1200)
+const onInputFocus = () => {
+  kbOpen.value = true // 立即进入键盘态：收导航间距+锁滚动，不等高度事件
+  pollKb(2000)
+}
+const onInputBlur = () => {
+  pollKb(1200) // 收起有动画，先轮询校正；结束后仍高于阈值才算关
+  setTimeout(() => {
+    if (kbOpen.value) {
+      kbOpen.value = false
+      pageH.value = ''
+    }
+  }, 1300)
+}
 
 function bindKeyboard() {
   window.visualViewport?.addEventListener('resize', checkKb)
