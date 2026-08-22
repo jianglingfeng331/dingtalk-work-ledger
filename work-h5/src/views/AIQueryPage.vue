@@ -77,10 +77,18 @@ function pollKb(ms) {
   const end = Date.now() + ms
   pollTimer = setInterval(() => {
     anchorFooter()
+    // 键盘态窗口必须保持scroll 0：原生聚焦会把窗口滚下去（平移式），
+    // fixed输入框的锚定参照系随窗口滚动偏移，首次点击即失效的根源
+    if (kbOpen.value && window.scrollY > 0) window.scrollTo(0, 0)
     // 视口压缩过（说明vv在正常上报）→ 正常锚定模式
     if (kbOpen.value && baseH - measureH() > 120) kbMode.value = 'vv'
     if (Date.now() >= end) clearInterval(pollTimer)
   }, 200)
+}
+
+/** 键盘态拦截窗口滚动：webview原生聚焦/回弹随时可能把窗口滚离0 */
+function onWinScroll() {
+  if (kbOpen.value && window.scrollY > 0) window.scrollTo(0, 0)
 }
 
 const onInputFocus = () => {
@@ -88,6 +96,8 @@ const onInputFocus = () => {
   kbOpen.value = true
   kbMode.value = 'vv'
   anchorFooter()
+  window.scrollTo(0, 0) // 抢在原生聚焦滚动之前复位（首点关键）
+  setTimeout(() => window.scrollTo(0, 0), 150) // 原生滚动发生在focus后，二次复位兜底
   scrollToBottom()
   pollKb(3000)
   // 纯覆盖式键盘兜底：视口毫无变化则钉顶
@@ -111,6 +121,7 @@ function bindKeyboard() {
   // vv 的 resize/scroll 事件期间持续锚定（scroll 在平移式键盘的原生滚动中就会触发）
   window.visualViewport?.addEventListener('resize', anchorFooter)
   window.visualViewport?.addEventListener('scroll', anchorFooter)
+  window.addEventListener('scroll', onWinScroll, { passive: true })
   if (!baseH) baseH = Math.max(window.innerHeight, measureH())
 }
 
@@ -140,6 +151,7 @@ onBeforeUnmount(() => {
   clearTimeout(topTimer)
   window.visualViewport?.removeEventListener('resize', anchorFooter)
   window.visualViewport?.removeEventListener('scroll', anchorFooter)
+  window.removeEventListener('scroll', onWinScroll)
 })
 </script>
 
