@@ -54,6 +54,24 @@ function requireOperatorId(explicit, projectId) {
   return op
 }
 
+/** 权限兜底：钉钉对无表格访问权的操作人返回403/404——自动改用项目配置操作人重试
+ *  场景：成员在「项目成员表」但AI表格未共享给他，读任务/成员、写日志/计划仍可用（成员列按本人精确归属） */
+async function withPermFallback(operatorId, projectId, fn) {
+  const t = getTable(projectId)
+  const primary = operatorId || t.operatorUnionId || ''
+  try {
+    return await fn(primary)
+  } catch (err) {
+    const status = err?.response?.status
+    const fb = t.operatorUnionId || ''
+    if ((status === 403 || status === 404) && fb && fb !== primary) {
+      console.warn(`[table] 操作人无表格权限(${status})，改用项目操作人重试`)
+      return await fn(fb)
+    }
+    throw err
+  }
+}
+
 async function headers() {
   const token = await getAccessToken()
   return { 'x-acs-dingtalk-access-token': token, 'Content-Type': 'application/json' }
@@ -111,7 +129,7 @@ function rowToRecord(f, row) {
  *   关联类型(unidirectional/bidirectionalLink) → 写 {linkedRecordIds:[任务记录ID]}（原生关联：可点击跳转、任务侧聚合）
  *   其他（文本等）→ 写任务名称文字（软关联）
  * 匹配失败/写入异常均不阻断日志入库（失败去掉关联字段重写一次） */
-export async function addRecord(record, operatorId, projectId = '') {
+async function writeRecord(record, operatorId, projectId) {
   const fields = {
     [COLS.taskDate]: toPlainDate(record.taskDate),
     [COLS.rawContent]: record.rawContent,
@@ -158,6 +176,11 @@ export async function addRecord(record, operatorId, projectId = '') {
   }
 }
 
+/** 新增日志（导出）：权限兜底后写入 */
+export function addRecord(record, operatorId, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => writeRecord(record, op, projectId))
+}
+
 /** 检测「关联任务」列是否为钉钉原生关联类型（读字段定义，失败视为非关联，走文本写入） */
 async function isLinkColumn(operatorId, projectId = '') {
   const b = bucketOf(projectId)
@@ -184,7 +207,7 @@ async function isLinkColumn(operatorId, projectId = '') {
 /* ===================== 任务表关联 ===================== */
 
 /** 拉取任务表全量：[{recordId, title, owner, status, planDate}]（列名按任务表默认表头，缺失时置空） */
-export async function listTasks(operatorId, projectId = '') {
+async function fetchTasks(operatorId, projectId = '') {
   const t = getTable(projectId)
   if (!t.taskSheetName) return []
   const b = bucketOf(projectId)
@@ -227,6 +250,11 @@ export async function listTasks(operatorId, projectId = '') {
   return list
 }
 
+/** 任务表全量（导出）：权限兜底后拉取 */
+export function listTasks(operatorId, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => fetchTasks(op, projectId))
+}
+
 /* ===================== 计划（任务表写入） ===================== */
 
 const TASK_SHEET = (projectId = '') => {
@@ -235,7 +263,7 @@ const TASK_SHEET = (projectId = '') => {
 }
 
 /** 拉取项目成员表：姓名 + 通讯录用户unionId（写任务表负责人user列用）+ 角色 */
-export async function listMembers(operatorId, projectId = '') {
+async function fetchMembers(operatorId, projectId = '') {
   const b = bucketOf(projectId)
   if (b.members && Date.now() < b.members.expireAt) return b.members.list
   const t = getTable(projectId)
@@ -261,6 +289,11 @@ export async function listMembers(operatorId, projectId = '') {
   return list
 }
 
+/** 项目成员表（导出）：权限兜底后拉取 */
+export function listMembers(operatorId, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => fetchMembers(op, projectId))
+}
+
 async function listTaskFields(operatorId, projectId = '') {
   const b = bucketOf(projectId)
   if (b.taskFields && Date.now() < b.taskFields.expireAt) return b.taskFields.list
@@ -274,7 +307,7 @@ async function listTaskFields(operatorId, projectId = '') {
 /** 任务分类选项（读任务表「任务分类」单选列配置；读不到给默认集） */
 export async function listTaskCategories(operatorId, projectId = '') {
   try {
-    const fields = await listTaskFields(operatorId, projectId)
+    const fields = await withPermFallback(operatorId, projectId, (op) => listTaskFields(op, projectId))
     const choices = fields.find((f) => f.name === '任务分类')?.property?.choices || []
     const list = choices.map((c) => c.name).filter(Boolean)
     if (list.length) return list
@@ -289,7 +322,7 @@ export async function listTaskCategories(operatorId, projectId = '') {
  * 状态默认「未开始」；负责人user列缺unionId时跳过该列（不阻断）
  * clientToken 幂等：补推重发不会在任务表产生重复行
  */
-export async function addPlanRecord(plan, operatorId, clientToken, projectId = '') {
+async function writePlanRecord(plan, operatorId, clientToken, projectId) {
   const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
   const fields = {
     任务名称: plan.title,
@@ -305,6 +338,11 @@ export async function addPlanRecord(plan, operatorId, clientToken, projectId = '
   )
   invalidate(projectId, 'tasks') // 写入成功后失效任务缓存，任务页立即可见
   return data
+}
+
+/** 计划写入（导出）：权限兜底后写入 */
+export function addPlanRecord(plan, operatorId, clientToken, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => writePlanRecord(plan, op, clientToken, projectId))
 }
 
 /** 内容匹配任务：工作内容含任务名 → 命中（取最长任务名，避免短名误中） */
@@ -388,7 +426,7 @@ async function matchTaskByAI(content, tasks) {
 /* ===================== 日志表读取（镜像/AI查询用） ===================== */
 
 /** 全量拉取记录（分页，30秒缓存，按项目分桶），映射回业务字段 */
-export async function listAllRecords({ force = false, operatorId, projectId = '' } = {}) {
+async function fetchAllRecords({ force = false, operatorId, projectId = '' } = {}) {
   const b = bucketOf(projectId)
   if (!force && b.records && Date.now() < b.records.expireAt) return b.records.list
 
@@ -409,4 +447,9 @@ export async function listAllRecords({ force = false, operatorId, projectId = ''
   rows.sort((a, b2) => String(b2.recordTime).localeCompare(String(a.recordTime)))
   b.records = { list: rows, expireAt: Date.now() + 30_000 }
   return rows
+}
+
+/** 全量记录（导出）：权限兜底后拉取 */
+export function listAllRecords(opts = {}) {
+  return withPermFallback(opts.operatorId, opts.projectId, (op) => fetchAllRecords({ ...opts, operatorId: op }))
 }
