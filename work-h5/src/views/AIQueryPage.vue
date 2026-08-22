@@ -47,53 +47,62 @@ function scrollToBottom() {
   })
 }
 
-/* 键盘适配（钉钉webview两难点：①部分安卓键盘弹出不触发resize事件，
-   高度判定法失效；②immutable缓存的同名JS不会重新下载，本文件改动会换哈希）。
-   策略：focus即视为键盘弹出（点输入框必弹键盘，不依赖高度事件），
-   高度由resize/轮询期间实测补充；blur即收起 */
+/* 键盘适配 v8 三分支全覆盖（钉钉安卓webview行为不可预知）：
+   A. 视口会压缩（resizes-content/正常resize）→ 轮询测到高度骤降 → 锁页高，输入框贴键盘上方
+   B. 完全无事件（覆盖式键盘，盖住底部）→ 1秒内没测到压缩 → 输入框钉到页面顶部（键盘永远盖不住顶部）
+   C. iOS正常行为 → 走A分支
+   blur后统一收起。诊断徽标显示当前命中分支，便于远程定位。 */
 const kbOpen = ref(false)
+const kbMode = ref('') // '' | 'shrink'(A) | 'top'(B)
 const pageH = ref('')
 let baseH = 0
 let pollTimer = null
+let topTimer = null
 
-function checkKb() {
+function measureH() {
   const vv = window.visualViewport
-  const h = vv ? vv.height : window.innerHeight
-  if (!baseH) baseH = Math.max(window.innerHeight, h)
-  const open = baseH - h > 120
-  kbOpen.value = open
-  pageH.value = open ? `${Math.round(h)}px` : ''
-  if (open) scrollToBottom()
+  return vv ? vv.height : window.innerHeight
 }
 
-/** 键盘弹出期轮询实测高度（覆盖式键盘拿不到就保持dvh，输入框仍贴可视区底） */
+function applyShrink(h) {
+  if (kbMode.value !== 'shrink') scrollToBottom()
+  kbMode.value = 'shrink'
+  pageH.value = `${Math.round(h)}px`
+}
+
 function pollKb(ms) {
   clearInterval(pollTimer)
   const end = Date.now() + ms
   pollTimer = setInterval(() => {
-    checkKb()
+    const h = measureH()
+    if (baseH - h > 120) applyShrink(h)
     if (Date.now() >= end) clearInterval(pollTimer)
-  }, 250)
+  }, 200)
 }
 
 const onInputFocus = () => {
-  kbOpen.value = true // 立即进入键盘态：收导航间距+锁滚动，不等高度事件
-  pollKb(2000)
+  if (!baseH) baseH = Math.max(window.innerHeight, measureH())
+  kbOpen.value = true // 立即进入键盘态：收导航间距+锁body滚动
+  pollKb(3000)
+  // 覆盖式键盘兜底：整个弹出期测不到视口压缩，就把输入框钉到顶部
+  clearTimeout(topTimer)
+  topTimer = setTimeout(() => {
+    if (kbOpen.value && !pageH.value) kbMode.value = 'top'
+  }, 1000)
 }
+
 const onInputBlur = () => {
-  pollKb(1200) // 收起有动画，先轮询校正；结束后仍高于阈值才算关
+  clearTimeout(topTimer)
   setTimeout(() => {
-    if (kbOpen.value) {
-      kbOpen.value = false
-      pageH.value = ''
-    }
-  }, 1300)
+    kbOpen.value = false
+    kbMode.value = ''
+    pageH.value = ''
+  }, 1200)
 }
 
 function bindKeyboard() {
-  window.visualViewport?.addEventListener('resize', checkKb)
-  window.addEventListener('resize', checkKb)
-  checkKb() // 立即初始化基准高度
+  // focus/blur+轮询已覆盖事件路径，这里只负责初始化基准高度
+  if (!baseH) baseH = Math.max(window.innerHeight, measureH())
 }
 
 onMounted(async () => {
@@ -109,9 +118,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  window.visualViewport?.removeEventListener('resize', checkKb)
-  window.removeEventListener('resize', checkKb)
   clearInterval(pollTimer)
+  clearTimeout(topTimer)
 })
 </script>
 
@@ -124,6 +132,8 @@ onBeforeUnmount(() => {
           <p class="page-subtitle">自然语言查询台账 · 统计与复盘</p>
         </div>
         <van-tag v-if="runtime.mockMode" plain type="warning" size="medium">演示模式</van-tag>
+        <!-- 键盘诊断徽标（定位webview行为用，稳定后移除） -->
+        <van-tag v-if="kbOpen" plain size="medium" class="kb-badge">v8·{{ kbMode || 'wait' }}</van-tag>
       </div>
     </header>
 
@@ -151,7 +161,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 输入区 -->
-    <footer class="chat-footer safe-bottom" :class="{ 'kb-open': kbOpen }">
+    <footer class="chat-footer safe-bottom" :class="{ 'kb-open': kbOpen, 'kb-top': kbMode === 'top' }">
       <van-field
         v-model="input"
         class="chat-input"
@@ -312,7 +322,24 @@ onBeforeUnmount(() => {
 
 /* 键盘弹出：底部导航已隐藏（App.vue），去掉预留间距让输入框贴住键盘上沿 */
 .chat-footer.kb-open {
-  margin-bottom: 0;
+  margin-bottom: 8px;
+}
+
+/* 覆盖式键盘兜底：视口不压缩时输入框钉到头部下方，键盘永远盖不住页面顶部 */
+.chat-footer.kb-top {
+  position: fixed;
+  top: 76px;
+  left: 12px;
+  right: 12px;
+  bottom: auto;
+  margin: 0;
+  z-index: 60;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(22, 119, 255, 0.18);
+}
+
+.kb-badge {
+  flex-shrink: 0;
 }
 
 .chat-input {
