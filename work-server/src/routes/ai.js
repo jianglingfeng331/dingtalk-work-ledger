@@ -58,25 +58,17 @@ router.post(
     if (!records.length && !tasks.length) {
       return ok(res, '当前还没有工作记录和任务，先去「工作记录」页随手记一条吧。')
     }
+    console.log(`[ai] 查询(${user.name}${team ? '/团队' : ''}): ${question.slice(0, 40)} | 注入: 日志${records.length}条 任务${tasks.length}项 成员${members.length}人`)
 
     // LLM 推理：台账数据作为上下文注入（45s 预算，含限流退避与备用模型切换）
+    // 任务表段落放在日志流水之前：避免长日志明细抢占注意力导致模型忽略任务表
     const dataContext = [
       `【台账数据｜维度: ${team ? '全员' : user.name}】`,
       `统计: 共${stats.total}条，完成率${stats.doneRate}%，进度分布${JSON.stringify(stats.byProgress)}`,
       team ? `成员工作量: ${JSON.stringify(stats.byMember)}` : '',
       `标签分布: ${JSON.stringify(stats.byTag)}`,
-      '记录明细（工时为小时，空表示未记录）:',
-      ...records
-        .slice(0, 60)
-        .map(
-          (r) =>
-            `- ${r.taskDate} [${r.progress}][工时${r.hours ?? '-'}] ${r.recorder}: ${r.title}｜原始内容: ${r.rawContent}｜标签: ${r.tags.join('、') || '无'}`,
-        ),
-      members.length
-        ? `\n【项目成员｜共${members.length}人】\n${members.map((m) => `- ${m.name}${m.roles?.length ? `（${m.roles.join('、')}）` : ''}`).join('\n')}`
-        : '',
       tasks.length
-        ? `\n【任务表｜共${tasks.length}项｜字段: 任务名/负责人/状态/计划节点/任务分类】\n${tasks
+        ? `【任务表（工作安排）｜共${tasks.length}项｜字段: 任务名/负责人/状态/计划节点/任务分类】\n${tasks
             .slice(0, 80)
             .map(
               (t) =>
@@ -84,6 +76,16 @@ router.post(
             )
             .join('\n')}${tasks.length > 80 ? `\n（仅展示前80项，共${tasks.length}项）` : ''}`
         : '',
+      members.length
+        ? `【项目成员｜共${members.length}人】\n${members.map((m) => `- ${m.name}${m.roles?.length ? `（${m.roles.join('、')}）` : ''}`).join('\n')}`
+        : '',
+      '【工作日志（已完成的工作流水）｜记录明细，工时为小时，空表示未记录】:',
+      ...records
+        .slice(0, 60)
+        .map(
+          (r) =>
+            `- ${r.taskDate} [${r.progress}][工时${r.hours ?? '-'}] ${r.recorder}: ${r.title}｜原始内容: ${r.rawContent}｜标签: ${r.tags.join('、') || '无'}`,
+        ),
     ]
       .filter(Boolean)
       .join('\n')
