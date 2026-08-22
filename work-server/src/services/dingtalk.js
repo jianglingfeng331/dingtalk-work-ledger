@@ -1,12 +1,14 @@
 import axios from 'axios'
+import crypto from 'node:crypto'
 import { config } from '../config.js'
 
 /**
- * 钉钉开放平台服务：access_token 缓存 + 免登码换用户信息
+ * 钉钉开放平台服务：access_token 缓存 + 免登码换用户信息 + JSAPI 鉴权签名
  */
 const HTTP = axios.create({ timeout: 10000 })
 
 let tokenCache = { token: '', expireAt: 0 }
+let ticketCache = { ticket: '', expireAt: 0 }
 
 /** 获取企业 access_token（长期缓存，提前5分钟刷新） */
 export async function getAccessToken() {
@@ -24,6 +26,32 @@ export async function getAccessToken() {
     expireAt: Date.now() + (data.expireInMs || 7200_000) - 5 * 60_000,
   }
   return tokenCache.token
+}
+
+/** 获取企业 jsapi_ticket（JSAPI 鉴权用，长期缓存） */
+export async function getJsapiTicket() {
+  if (ticketCache.ticket && Date.now() < ticketCache.expireAt) return ticketCache.ticket
+  const token = await getAccessToken()
+  const { data } = await HTTP.get(`https://oapi.dingtalk.com/get_jsapi_ticket?access_token=${token}`)
+  if (data?.errcode !== 0 || !data?.ticket) throw new Error(`获取jsapi_ticket失败: ${data?.errmsg || '未知'}`)
+  ticketCache = {
+    ticket: data.ticket,
+    expireAt: Date.now() + (data.expire_in || 7200) * 1000 - 5 * 60_000,
+  }
+  return ticketCache.ticket
+}
+
+/**
+ * 生成 JSAPI 鉴权签名（dd.config 用，录音等客户端能力必须鉴权）
+ * @param {string} url 当前页面 URL（去掉 hash）
+ */
+export async function signJsapi(url) {
+  const ticket = await getJsapiTicket()
+  const nonceStr = crypto.randomBytes(8).toString('hex')
+  const timeStamp = String(Math.floor(Date.now() / 1000))
+  const plain = `jsapi_ticket=${ticket}&noncestr=${nonceStr}&timestamp=${timeStamp}&url=${url}`
+  const signature = crypto.createHash('sha1').update(plain).digest('hex')
+  return { agentId: config.agentId, corpId: config.corpId, timeStamp, nonceStr, signature }
 }
 
 /**

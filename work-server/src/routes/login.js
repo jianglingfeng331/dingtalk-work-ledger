@@ -1,12 +1,25 @@
 import { Router } from 'express'
 import { config } from '../config.js'
-import { getUserByAuthCode } from '../services/dingtalk.js'
+import { getUserByAuthCode, signJsapi } from '../services/dingtalk.js'
 import { createSession } from '../services/session.js'
 import { isAdmin, get as getSettings, update as updateSettings } from '../services/settings.js'
 import { fixRecorderName } from '../services/store.js'
 import { asyncRoute, fail, ok } from '../utils/respond.js'
 
 const router = Router()
+
+/**
+ * GET /api/login/jsapi-sign?url=xxx  JSAPI 鉴权签名（dd.config 用：录音等客户端能力）
+ */
+router.get(
+  '/login/jsapi-sign',
+  asyncRoute(async (req, res) => {
+    if (!config.dingtalkEnabled) return fail(res, '未配置钉钉应用凭据', 400)
+    const url = String(req.query.url || '').split('#')[0]
+    if (!/^https?:\/\//.test(url)) return fail(res, 'url 参数无效', 400)
+    ok(res, await signJsapi(url))
+  }),
+)
 
 /**
  * POST /api/login 钉钉免登

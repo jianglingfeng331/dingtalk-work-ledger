@@ -63,19 +63,21 @@ function setFilter(f) {
 }
 
 /* ===================== 语音识别（长按说话） =====================
- * 双引擎：WebSpeech 实时上屏（可用时）；失败（国内网络/内嵌浏览器）自动切换云端录音（后端智谱ASR）
+ * 三级引擎：WebSpeech 实时上屏 → 浏览器录音+云端转写 → 钉钉JSAPI录音+钉钉转写（容器内兜底）
  */
 import { transcribeWav, WavRecorder } from '../utils/recorder'
+import { DdAudioRecorder } from '../utils/dingtalk'
 import { getToken } from '../utils/user'
 
 const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
 const speechSupported = Boolean(SR) && (typeof window !== 'undefined' ? window.isSecureContext !== false : true)
 const recognizing = ref(false) // 按住中（任一引擎）
 const transcribing = ref(false) // 松开后的云端转写中
-const engine = ref('') // '' | 'web' | 'cloud'
+const engine = ref('') // '' | 'web' | 'cloud' | 'dd'
 let recognition = null
 let pressTimer = null
 let wavRecorder = null
+let ddRecorder = null
 
 function onTouchStart(e) {
   if (e.cancelable) e.preventDefault()
@@ -95,7 +97,7 @@ function startSpeech() {
       tryStartWebSpeech()
       // 给 WebSpeech 1.2s 启动窗口，期间报错/无响应则切云端
       setTimeout(async () => {
-        if (recognizing.value && engine.value !== 'web' && engine.value !== 'cloud') await switchToCloud()
+        if (recognizing.value && engine.value !== 'web' && engine.value !== 'cloud' && engine.value !== 'dd') await switchToCloud()
       }, 1200)
       return
     }
@@ -134,22 +136,38 @@ function tryStartWebSpeech() {
   }
 }
 
-/** 切换云端录音引擎（按住期间无缝切换） */
+/** 切换云端录音引擎（按住期间无缝切换）：浏览器录音优先，钉钉容器内兜底 JSAPI */
 async function switchToCloud() {
-  if (!WavRecorder.supported()) {
-    recognizing.value = false
-    showToast('当前浏览器不支持语音，请用 Chrome/Edge 打开')
-    return
+  // 引擎2：浏览器录音（getUserMedia+MediaRecorder）
+  if (WavRecorder.supported()) {
+    try {
+      await stopWebSpeechQuietly()
+      wavRecorder = new WavRecorder()
+      await wavRecorder.start()
+      engine.value = 'cloud'
+      return
+    } catch (err) {
+      console.warn('[voice] 浏览器录音失败，尝试钉钉JSAPI:', err?.message)
+    }
   }
-  try {
-    await stopWebSpeechQuietly()
-    wavRecorder = new WavRecorder()
-    await wavRecorder.start()
-    engine.value = 'cloud'
-  } catch (err) {
-    recognizing.value = false
-    showToast(err?.name === 'NotAllowedError' ? '麦克风权限被拒绝，请在浏览器允许后重试' : '无法启动录音：' + (err?.message || err?.name || '未知错误'))
+  // 引擎3：钉钉 JSAPI 录音（webview 无浏览器录音 API 的设备）
+  if (DdAudioRecorder.supported()) {
+    try {
+      await stopWebSpeechQuietly()
+      ddRecorder = new DdAudioRecorder()
+      await ddRecorder.start()
+      engine.value = 'dd'
+      return
+    } catch (err) {
+      console.warn('[voice] 钉钉JSAPI录音失败:', err?.message)
+      ddRecorder = null
+      recognizing.value = false
+      showToast(err?.message || '录音启动失败，请重试')
+      return
+    }
   }
+  recognizing.value = false
+  showToast('当前环境不支持录音，请升级钉钉到最新版后重试')
 }
 
 async function stopWebSpeechQuietly() {
@@ -170,6 +188,29 @@ async function stopWebSpeechQuietly() {
 function stopSpeech() {
   clearTimeout(pressTimer)
   if (!recognizing.value) return
+
+  if (engine.value === 'dd' && ddRecorder) {
+    recognizing.value = false
+    transcribing.value = true
+    const rec = ddRecorder
+    ddRecorder = null
+    ;(async () => {
+      try {
+        const text = await rec.stopTranscribe()
+        if (text) {
+          content.value = text
+          showToast('识别完成，可润色或直接拆解')
+        } else {
+          showToast('说话时间太短，请重试')
+        }
+      } catch (err) {
+        showToast(err?.message || '语音识别失败')
+      } finally {
+        transcribing.value = false
+      }
+    })()
+    return
+  }
 
   if (engine.value === 'cloud' && wavRecorder) {
     recognizing.value = false
@@ -216,6 +257,8 @@ onBeforeUnmount(() => {
     }
     wavRecorder = null
   }
+  ddRecorder?.abort()
+  ddRecorder = null
   recognizing.value = false
   transcribing.value = false
 })
