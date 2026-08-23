@@ -565,26 +565,21 @@ onMounted(async () => {
 
     <!-- 固定输入区：任务选择 + 文字输入 + 润色/拆解 -->
     <section class="card input-card">
-      <!-- 关联任务：从任务表筛"我的任务"（负责人或参与人含本人）单选；不选则提交时智能匹配 -->
-      <van-field
-        v-if="myTasks.length"
-        :model-value="selectedTaskTitle"
-        class="task-field"
-        label="关联任务"
-        placeholder="点击选择任务，不选则自动匹配"
-        readonly
-        @click="showTaskPicker = true"
-      >
-        <template #right-icon>
-          <van-icon
-            v-if="selectedTaskId"
-            name="clear"
-            class="task-clear"
-            @click.stop="selectedTaskId = ''"
-          />
-          <van-icon v-else name="arrow" />
-        </template>
-      </van-field>
+      <!-- 关联任务：从任务表筛"我的任务"（负责人或参与人含本人）单选；不选则提交时智能匹配
+           自定义行（非van-field）：固定高度+单行省略，选中/未选中行高严格一致 -->
+      <div v-if="myTasks.length" class="task-bar" @click="showTaskPicker = true">
+        <span class="tb-label">关联任务</span>
+        <span class="tb-value" :class="{ empty: !selectedTaskTitle }">
+          {{ selectedTaskTitle || '选择任务，不选则自动匹配' }}
+        </span>
+        <van-icon
+          v-if="selectedTaskId"
+          name="clear"
+          class="tb-action"
+          @click.stop="selectedTaskId = ''"
+        />
+        <van-icon v-else name="arrow" class="tb-action tb-arrow" />
+      </div>
       <van-field
         v-model="content"
         type="textarea"
@@ -882,22 +877,45 @@ onMounted(async () => {
   padding: 8px 0 2px; /* 底部交给操作行的上边距，避免按钮贴住输入文字 */
 }
 
-/* 关联任务选择：与下方输入框分隔；选中态可一键清除 */
-.task-field {
-  border-bottom: 1px solid #ebedf0;
-}
-
-.task-field :deep(.van-field__control) {
+/* 关联任务选择行（输入区）：固定40px行盒+单行省略，选中长名与未选中高度严格一致 */
+.task-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px; /* 锁死高度，杜绝任何状态下的跳动 */
+  margin: 2px 0 6px;
+  padding: 0 10px;
+  background: #f7f8fa;
+  border-radius: 8px;
   cursor: pointer;
+}
+.tb-label {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: #646566;
+}
+.tb-value {
+  flex: 1;
+  min-width: 0; /* flex子项允许收缩，省略号生效的前提 */
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-main, #323233);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis; /* 长任务名单行省略，行高不随选中状态变化 */
+  text-overflow: ellipsis;
 }
-
-.task-clear {
-  padding: 6px;
+.tb-value.empty {
   color: #c8c9cc;
+  font-size: 13px;
+}
+.tb-action {
+  flex-shrink: 0;
+  padding: 6px;
   font-size: 16px;
+  color: #c8c9cc;
+}
+.tb-action.tb-arrow {
+  color: #c8c9cc;
 }
 
 .input-actions {
@@ -1140,9 +1158,10 @@ onMounted(async () => {
   color: #c8c9cc;
 }
 
-/* 关联任务选择行：任务名单行省略+固定行高，选中长名与未选中高度完全一致，避免确认卡内容跳动 */
+/* 关联任务选择行（确认卡）：固定行盒+单行省略，选中长名与未选中高度完全一致，避免确认卡内容跳动 */
 .plan-cell.task-cell {
-  min-height: 44px; /* 12px上下padding + 20px行高，锁死行盒 */
+  height: 44px; /* 固定高度（非min-height）：内容再长也不许撑高 */
+  overflow: hidden;
   box-sizing: border-box;
 }
 .task-cell .task-name {
