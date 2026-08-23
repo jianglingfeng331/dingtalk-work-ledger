@@ -65,11 +65,12 @@ export async function login(params, { keepDiag = false } = {}) {
   }
 }
 
-/** 提交工作内容（后端结构化解析 + 任务关联匹配 + 同步钉钉AI表格）；overrides 为用户确认卡修改的字段
+/** 提交工作内容（后端结构化解析 + 任务关联 + 同步钉钉AI表格）；overrides 为用户确认卡修改的字段
+ * taskId：用户显式选择的关联任务记录ID（空则后端智能匹配）
  * 超时35s：容纳智谱偶发限流重试与AI语义匹配（规则匹配先行，通常2-4s完成） */
-export async function submitWork(content, overrides = {}) {
+export async function submitWork(content, overrides = {}, taskId = '') {
   try {
-    return await request.post('/submit-work', { content, overrides }, { timeout: 35000 })
+    return await request.post('/submit-work', { content, overrides, taskId }, { timeout: 35000 })
   } catch {
     fallback()
     return mock.mockSubmitWork(content, localUser())
@@ -91,9 +92,10 @@ export async function aiQuery(question) {
   return request.post('/ai-query', { question }, { timeout: 60000 })
 }
 
-/** 任务视图：任务清单+关联日志聚合（来源钉钉AI表格，未接表格返回 enabled:false） */
-export function getTasks() {
-  return request.get('/tasks', { timeout: 30000 })
+/** 任务视图：任务清单+关联日志聚合（来源钉钉AI表格，未接表格返回 enabled:false）
+ * params.mine=1 只返回与当前用户相关的任务（负责人或参与人含该用户） */
+export function getTasks(params = {}) {
+  return request.get('/tasks', { params, timeout: 30000 })
 }
 
 /** 单任务关联日志（时间倒序，最多50条） */

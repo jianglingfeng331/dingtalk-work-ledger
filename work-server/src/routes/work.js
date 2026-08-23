@@ -102,6 +102,7 @@ router.post(
  * POST /api/submit-work 提交工作记录
  * body.content          原始内容（语音识别文本或文字输入）
  * body.overrides        用户在确认卡修改后的字段：{ progress, hours }，覆盖规则解析结果
+ * body.taskId           用户显式选择的关联任务记录ID（空则走智能匹配）
  * 标题/日期/标签始终基于最终 content 重新解析，保证一致
  */
 router.post(
@@ -128,7 +129,8 @@ router.post(
       if (Number.isFinite(h) && h >= 0 && h <= 24) parsed.hours = h
     }
 
-    const record = await addRecord({ user: req.user, rawContent: content, parsed, projectId: req.user.projectId })
+    const taskId = String(req.body?.taskId || '').trim()
+    const record = await addRecord({ user: req.user, rawContent: content, parsed, projectId: req.user.projectId, taskId })
 
     lastSubmit.set(req.user.userId, { content, ts: Date.now() })
     ok(

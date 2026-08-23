@@ -71,8 +71,9 @@ export function fixRecorderName(userId, realName) {
 }
 
 /** 新增一条工作记录：结构化字段由 parser 生成，此处补全 id/人/时间
+ * taskId：用户在页面显式选择的关联任务记录ID（空则由表格层智能匹配）
  * 表格推送失败不丢数据：照常写本地镜像（标记待补推）并返回半成功状态，由补推队列自动重推 */
-export async function addRecord({ user, rawContent, parsed, projectId = '' }) {
+export async function addRecord({ user, rawContent, parsed, projectId = '', taskId = '' }) {
   const record = {
     id: uuid(),
     projectId,
@@ -81,6 +82,7 @@ export async function addRecord({ user, rawContent, parsed, projectId = '' }) {
     recorder: user.name,
     recordTime: fmtDateTime(new Date()),
     rawContent,
+    taskId,
     ...parsed,
   }
 

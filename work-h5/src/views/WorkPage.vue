@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { showFailToast, showSuccessToast, showToast } from 'vant'
-import { enrichWork, getPlanOptions, getWorkList, parsePlan, parseWork, runtime, submitPlan, submitWork } from '../api'
+import { enrichWork, getPlanOptions, getTasks, getWorkList, parsePlan, parseWork, runtime, submitPlan, submitWork } from '../api'
 import { fmtDate } from '../utils/format'
 import { initUser, userStore } from '../utils/user'
 import { loadMyProjects, projectStore } from '../utils/project'
@@ -343,6 +343,52 @@ async function enrich() {
   }
 }
 
+/* ===================== 任务选择（日志显式关联，替代智能匹配） ===================== */
+const myTasks = ref([]) // 与当前用户相关的任务（负责人或参与人含本人）
+const selectedTaskId = ref('') // 选中的任务记录ID；空=不指定，提交时由后端智能匹配
+const showTaskPicker = ref(false)
+
+const taskColumns = computed(() => [
+  { text: '不指定（按内容智能匹配）', value: '' },
+  ...myTasks.value.map((t) => ({ text: t.title, value: t.recordId })),
+])
+
+const selectedTaskTitle = computed(
+  () => myTasks.value.find((t) => t.recordId === selectedTaskId.value)?.title || '',
+)
+
+/** 拉取"我的任务"：失败不阻断记日志，仅隐藏手选入口 */
+async function loadMyTasks() {
+  try {
+    const res = await getTasks({ mine: 1 })
+    if (res?.enabled === false) {
+      myTasks.value = []
+    } else {
+      myTasks.value = res?.tasks || []
+    }
+    // 已选任务不在列表（被删/被移出）时清空，避免提交无效关联
+    if (selectedTaskId.value && !myTasks.value.some((t) => t.recordId === selectedTaskId.value)) {
+      selectedTaskId.value = ''
+    }
+  } catch {
+    myTasks.value = []
+  }
+}
+
+const onTaskConfirm = ({ selectedOptions }) => {
+  selectedTaskId.value = selectedOptions[0]?.value || ''
+  showTaskPicker.value = false
+}
+
+// 切换项目后任务清单要换，选择同步重置
+watch(
+  () => projectStore.projectId,
+  () => {
+    selectedTaskId.value = ''
+    loadMyTasks()
+  },
+)
+
 /* ===================== 智能拆解确认卡 ===================== */
 const confirmVisible = ref(false)
 const parsing = ref(false)
@@ -468,10 +514,14 @@ async function confirmSubmit() {
   if (submitting.value) return
   submitting.value = true
   try {
-    const res = await submitWork(text, {
-      progress: confirmForm.value.progress,
-      hours: confirmForm.value.hours,
-    })
+    const res = await submitWork(
+      text,
+      {
+        progress: confirmForm.value.progress,
+        hours: confirmForm.value.hours,
+      },
+      selectedTaskId.value, // 显式选择的任务：后端直接关联，跳过智能匹配
+    )
     confirmVisible.value = false
     content.value = ''
     showSuccessToast(res?.__message || (runtime.mockMode ? '已记录（本地演示）' : '已同步钉钉AI表格'))
@@ -488,6 +538,7 @@ onMounted(async () => {
   if (isDingTalkEnv()) ensureJsapiReady().catch(() => {})
   await initUser()
   await loadMyProjects() // 项目就绪（自动选中默认项目）后再查询，避免首启空项目查0条导致页面空白
+  loadMyTasks() // 后台拉"我的任务"供选择，不阻塞页面
   await load()
 })
 </script>
@@ -512,8 +563,28 @@ onMounted(async () => {
       </div>
     </header>
 
-    <!-- 固定输入区：文字输入 + 润色/拆解 -->
+    <!-- 固定输入区：任务选择 + 文字输入 + 润色/拆解 -->
     <section class="card input-card">
+      <!-- 关联任务：从任务表筛"我的任务"（负责人或参与人含本人）单选；不选则提交时智能匹配 -->
+      <van-field
+        v-if="myTasks.length"
+        :model-value="selectedTaskTitle"
+        class="task-field"
+        label="关联任务"
+        placeholder="点击选择任务，不选则自动匹配"
+        readonly
+        @click="showTaskPicker = true"
+      >
+        <template #right-icon>
+          <van-icon
+            v-if="selectedTaskId"
+            name="clear"
+            class="task-clear"
+            @click.stop="selectedTaskId = ''"
+          />
+          <van-icon v-else name="arrow" />
+        </template>
+      </van-field>
       <van-field
         v-model="content"
         type="textarea"
@@ -633,6 +704,20 @@ onMounted(async () => {
             class="confirm-input"
           />
 
+          <!-- 所选关联任务回显（可在确认卡里改选） -->
+          <template v-if="myTasks.length">
+            <div class="field-label">
+              关联任务
+              <van-tag plain type="primary" size="mini">{{ selectedTaskId ? '已选' : '未选·将智能匹配' }}</van-tag>
+            </div>
+            <div class="plan-cell" @click="showTaskPicker = true">
+              <span :class="{ placeholder: !selectedTaskTitle }">
+                {{ selectedTaskTitle || '点击选择任务' }}
+              </span>
+              <van-icon name="arrow" />
+            </div>
+          </template>
+
           <div class="field-label">完成情况</div>
           <div class="progress-picker">
             <button
@@ -716,6 +801,16 @@ onMounted(async () => {
       </div>
     </van-popup>
 
+    <!-- 日志：关联任务选择（我的任务单选） -->
+    <van-popup v-model:show="showTaskPicker" position="bottom" round>
+      <van-picker
+        title="选择关联任务"
+        :columns="taskColumns"
+        @confirm="onTaskConfirm"
+        @cancel="showTaskPicker = false"
+      />
+    </van-popup>
+
     <!-- 计划：负责人选择 -->
     <van-popup v-model:show="showOwnerPicker" position="bottom" round>
       <van-picker
@@ -785,6 +880,21 @@ onMounted(async () => {
 
 .input-card :deep(.van-field) {
   padding: 8px 0 2px; /* 底部交给操作行的上边距，避免按钮贴住输入文字 */
+}
+
+/* 关联任务选择：与下方输入框分隔；选中态可一键清除 */
+.task-field {
+  border-bottom: 1px solid #ebedf0;
+}
+
+.task-field :deep(.van-field__control) {
+  cursor: pointer;
+}
+
+.task-clear {
+  padding: 6px;
+  color: #c8c9cc;
+  font-size: 16px;
 }
 
 .input-actions {

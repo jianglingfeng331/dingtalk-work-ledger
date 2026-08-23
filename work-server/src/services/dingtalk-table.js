@@ -142,11 +142,22 @@ async function writeRecord(record, operatorId, projectId) {
   let linkValue = null // null=不关联；string=任务名；object=linkedRecordIds
   let isNativeLink = false
   try {
-    // 标题+原始内容合并参与匹配（短标题信息量不足，易漏配）
-    const hit = await matchTask(`${record.title || ''}。${record.rawContent || ''}`, operatorId, projectId)
-    if (hit) {
-      isNativeLink = await isLinkColumn(operatorId, projectId)
-      linkValue = isNativeLink ? { linkedRecordIds: [hit.recordId] } : hit.title
+    if (record.taskId) {
+      // 用户在页面显式选择了任务：直接按记录ID关联，跳过智能匹配
+      const picked = (await fetchTasks(operatorId, projectId)).find((x) => x.recordId === record.taskId)
+      if (picked) {
+        isNativeLink = await isLinkColumn(operatorId, projectId)
+        linkValue = isNativeLink ? { linkedRecordIds: [picked.recordId] } : picked.title
+      } else {
+        console.warn('[table] 所选任务不存在（可能已被删除），本次不关联')
+      }
+    } else {
+      // 未显式选择：智能匹配兜底。标题+原始内容合并参与匹配（短标题信息量不足，易漏配）
+      const hit = await matchTask(`${record.title || ''}。${record.rawContent || ''}`, operatorId, projectId)
+      if (hit) {
+        isNativeLink = await isLinkColumn(operatorId, projectId)
+        linkValue = isNativeLink ? { linkedRecordIds: [hit.recordId] } : hit.title
+      }
     }
   } catch (err) {
     console.warn('[table] 任务匹配失败（不影响日志入库）:', err?.message)
@@ -206,7 +217,20 @@ async function isLinkColumn(operatorId, projectId = '') {
 
 /* ===================== 任务表关联 ===================== */
 
-/** 拉取任务表全量：[{recordId, title, owner, status, planDate}]（列名按任务表默认表头，缺失时置空） */
+/** user列统一解析：[{name, unionId?}] → {names:[姓名], unionIds:[unionId]}（字段缺失/结构异常时返回空） */
+function parseUserCol(raw) {
+  if (!Array.isArray(raw)) return { names: [], unionIds: [] }
+  const names = []
+  const unionIds = []
+  for (const m of raw) {
+    if (m?.name) names.push(m.name)
+    if (m?.unionId) unionIds.push(m.unionId)
+  }
+  return { names, unionIds }
+}
+
+/** 拉取任务表全量：[{recordId, title, owner, ownerUnionIds, memberUnionIds, status, planDate, category}]
+ *  负责人/参与人（列存在时）均提取 unionId，供"我的任务"按人过滤 */
 async function fetchTasks(operatorId, projectId = '') {
   const t = getTable(projectId)
   if (!t.taskSheetName) return []
@@ -225,10 +249,9 @@ async function fetchTasks(operatorId, projectId = '') {
       const v = row.fields?.[t.taskTitleCol]
       const title = Array.isArray(v) ? v.map((x) => x?.text ?? x).join('') : v == null ? '' : String(v)
       if (!title.trim()) continue
-      const ownerRaw = row.fields?.['负责人']
-      const owner = Array.isArray(ownerRaw)
-        ? ownerRaw.map((m) => m?.name).filter(Boolean).join('、')
-        : ''
+      const { names: ownerNames, unionIds: ownerUnionIds } = parseUserCol(row.fields?.['负责人'])
+      // 参与人列（协作成员）：任务表没有该列时解析为空，不影响
+      const { names: memberNames, unionIds: memberUnionIds } = parseUserCol(row.fields?.['参与人'])
       const st = row.fields?.['状态']
       const status = st?.name ?? (typeof st === 'string' ? st : '')
       const planRaw = row.fields?.['计划节点']
@@ -237,7 +260,10 @@ async function fetchTasks(operatorId, projectId = '') {
       list.push({
         recordId: row.id,
         title: title.trim(),
-        owner,
+        owner: ownerNames.join('、'),
+        ownerUnionIds,
+        members: memberNames.join('、'),
+        memberUnionIds,
         status,
         planDate: typeof planRaw === 'number' ? toPlainDate(planRaw) : '',
         category,
