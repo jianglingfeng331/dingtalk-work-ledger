@@ -13,6 +13,9 @@ const router = Router()
 
 const PROGRESS_SET = new Set(['未开始', '进行中', '已完成'])
 
+/** 过滤HTML标签（纵深防御：前端纯文本展示，防表格侧/未来富文本场景的存储型XSS） */
+const stripHtmlTags = (s) => String(s).replace(/<\/?[a-zA-Z][^>]*>/g, '').trim()
+
 /**
  * 重复提交拦截：同一用户在配置窗口期内提交相同内容视为重复（窗口可在设置页调整）
  */
@@ -108,7 +111,7 @@ router.post(
 router.post(
   '/submit-work',
   asyncRoute(async (req, res) => {
-    const content = String(req.body?.content || '').trim()
+    const content = stripHtmlTags(String(req.body?.content || '').trim())
     if (!content) return fail(res, '工作内容不能为空')
     if (content.length > 500) return fail(res, '内容过长，请控制在500字以内')
 
@@ -121,12 +124,15 @@ router.post(
     // 规则解析
     const parsed = parseWorkContent(content, getSettings().tags)
 
-    // 用户确认卡字段覆盖（完成情况 / 工时）
+    // 用户确认卡字段覆盖（完成情况 / 工时）；工时硬校验 0-24，越界拒绝
     const ov = req.body?.overrides || {}
     if (ov.progress && PROGRESS_SET.has(ov.progress)) parsed.progress = ov.progress
     if (ov.hours !== undefined && ov.hours !== null && ov.hours !== '') {
       const h = Number(ov.hours)
-      if (Number.isFinite(h) && h >= 0 && h <= 24) parsed.hours = h
+      if (!Number.isFinite(h) || h < 0 || h > 24) {
+        return fail(res, '工时需在 0-24 小时之间', 400)
+      }
+      parsed.hours = h
     }
 
     const taskId = String(req.body?.taskId || '').trim()
@@ -250,7 +256,7 @@ router.post(
   '/submit-plan',
   asyncRoute(async (req, res) => {
     const { title, ownerName, planDate, category } = req.body || {}
-    if (!title || !String(title).trim()) return fail(res, '任务标题不能为空')
+    if (!title || !stripHtmlTags(String(title))) return fail(res, '任务标题不能为空')
     if (!ownerName) return fail(res, '请选择负责人')
 
     const op = req.user.unionId || ''
@@ -260,7 +266,7 @@ router.post(
     if (!owner) return fail(res, `负责人「${ownerName}」不在项目成员表中`)
 
     const plan = {
-      title: String(title).trim().slice(0, 50),
+      title: stripHtmlTags(String(title)).slice(0, 50),
       ownerUnionId: owner.unionId || '',
       ownerName: owner.name,
       planDate: /^\d{4}-\d{2}-\d{2}$/.test(String(planDate || '')) ? planDate : '',

@@ -119,9 +119,9 @@ export function update(patch) {
   return get()
 }
 
-/** 管理员判定：演示模式本地用户恒为管理员 */
+/** 管理员判定：演示模式本地用户恒为管理员；正式模式访客（source=local）为普通用户 */
 export function isAdmin(userId, source = '') {
-  if (source === 'local') return true
+  if (source === 'local' && !config.dingtalkEnabled) return true
   return state.adminUserIds.includes(userId)
 }
 

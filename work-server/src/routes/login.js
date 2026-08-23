@@ -9,22 +9,9 @@ import { asyncRoute, fail, ok } from '../utils/respond.js'
 const router = Router()
 
 /**
- * GET /api/login/jsapi-sign?url=xxx  JSAPI 鉴权签名（dd.config 用：录音等客户端能力）
- */
-router.get(
-  '/login/jsapi-sign',
-  asyncRoute(async (req, res) => {
-    if (!config.dingtalkEnabled) return fail(res, '未配置钉钉应用凭据', 400)
-    const url = String(req.query.url || '').split('#')[0]
-    if (!/^https?:\/\//.test(url)) return fail(res, 'url 参数无效', 400)
-    ok(res, await signJsapi(url))
-  }),
-)
-
-/**
- * POST /api/login 钉钉免登
- * body: { code, corpId }   钉钉内：JSAPI免登码
- * body: { dev: true }      非钉钉环境：演示登录（需后端未配置钉钉凭据）
+ * POST /api/login 钉钉免登（免鉴权）
+ * body: { code }  钉钉内：JSAPI免登码
+ * 无免登码场景：未配置凭据=演示模式；已配置且 ALLOW_DEV_LOGIN=1 =浏览器访客（普通权限）
  */
 router.post(
   '/login',
@@ -51,12 +38,12 @@ router.post(
       }
       console.log(`[login] 免登成功: ${user.userId}(${user.name})`)
     } else if (!config.dingtalkEnabled || config.allowDevLogin) {
-      // 无免登码场景：未配置凭据=演示模式；已配置但开启访客登录=浏览器测试（真实后端会话）
+      // 演示模式本地用户为管理员；正式模式访客仅普通权限（只能看本人数据，不能管理设置/项目）
       user = {
         userId: 'local-guest',
         name: config.dingtalkEnabled ? '浏览器访客' : '演示用户',
         source: 'local',
-        isAdmin: true,
+        isAdmin: !config.dingtalkEnabled,
       }
     } else {
       return fail(res, '缺少免登授权码，请在钉钉内打开应用')
@@ -64,6 +51,21 @@ router.post(
 
     const { token, user: userInfo } = createSession(user)
     ok(res, { ...userInfo, token })
+  }),
+)
+
+/**
+ * JSAPI 鉴权签名路由（需登录；dd.config 录音等客户端能力均在登录后使用）
+ * GET /api/jsapi-sign?url=xxx
+ */
+export const jsapiRouter = Router()
+jsapiRouter.get(
+  '/jsapi-sign',
+  asyncRoute(async (req, res) => {
+    if (!config.dingtalkEnabled) return fail(res, '未配置钉钉应用凭据', 400)
+    const url = String(req.query.url || '').split('#')[0]
+    if (!/^https?:\/\//.test(url)) return fail(res, 'url 参数无效', 400)
+    ok(res, await signJsapi(url))
   }),
 )
 

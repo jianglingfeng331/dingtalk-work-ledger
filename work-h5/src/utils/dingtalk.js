@@ -64,7 +64,11 @@ export function ensureJsapiReady() {
   if (jsapiReady) return jsapiReady
   jsapiReady = (async () => {
     const dd = await loadSDK()
-    const sign = await fetch(`/api/login/jsapi-sign?url=${encodeURIComponent(location.href.split('#')[0])}`).then((r) => r.json())
+    // 需携带登录态（后端 jsapi-sign 已加鉴权，防为任意来源签名）
+    const token = localStorage.getItem('work_token') || ''
+    const sign = await fetch(`/api/jsapi-sign?url=${encodeURIComponent(location.href.split('#')[0])}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then((r) => r.json())
     if (sign?.code !== 0) throw new Error(sign?.message || 'JSAPI签名获取失败')
     const { agentId, corpId, timeStamp, nonceStr, signature } = sign.data
     return new Promise((resolve, reject) => {

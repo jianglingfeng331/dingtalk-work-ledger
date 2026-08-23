@@ -54,7 +54,30 @@ request.interceptors.response.use(
     }
     return body.data
   },
-  (err) => Promise.reject(err),
+  async (err) => {
+    // 后端错误已透传真实 HTTP 状态码（401/403/404等）：从响应体提取 {code,message}，
+    // 与成功路径同构处理（401 自愈重试 / 非 0 抛中文错误），避免露出 axios 英文报错
+    const body = err?.response?.data
+    if (body !== null && typeof body === 'object' && 'code' in body) {
+      if (body.code === 401 && !err.config.__retried) {
+        err.config.__retried = true
+        try {
+          reloginFn = reloginFn || (await import('../utils/user')).relogin
+          const relogged = await reloginFn()
+          if (relogged) return request(err.config)
+        } catch {
+          /* 重新登录失败，按普通错误处理 */
+        }
+      }
+      if (body.code !== 0) {
+        const e = new Error(body.message || '请求失败')
+        e.code = body.code
+        throw e
+      }
+      return body.data
+    }
+    return Promise.reject(err)
+  },
 )
 
 export default request

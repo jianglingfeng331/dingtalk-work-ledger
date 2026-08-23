@@ -2,16 +2,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
-import cors from 'cors'
 import { config } from './src/config.js'
 import { getAI, getTable, getAsr } from './src/services/settings.js'
-import loginRoutes from './src/routes/login.js'
+import loginRoutes, { jsapiRouter } from './src/routes/login.js'
 import workRoutes from './src/routes/work.js'
 import aiRoutes from './src/routes/ai.js'
 import tasksRoutes from './src/routes/tasks.js'
 import settingsRoutes from './src/routes/settings.js'
 import projectsRoutes from './src/routes/projects.js'
 import { auth } from './src/middleware/auth.js'
+import { projectGuard } from './src/middleware/project-guard.js'
 import { initFromTable, loadFromFile, seedDemoData } from './src/services/store.js'
 import { startScheduler } from './src/services/pending-push.js'
 import { fail, ok } from './src/utils/respond.js'
@@ -19,25 +19,45 @@ import { fail, ok } from './src/utils/respond.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 
-app.use(cors())
+/* CORS 收敛：生产为同源部署（页面与 /api 同域），仅放行自身来源与本地开发调试来源；
+   其他跨域浏览器请求不返回 CORS 头（被浏览器拦截），非浏览器调用（curl/服务端）不受影响 */
+const DEV_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const EXTRA_ORIGINS = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+app.use((req, res, next) => {
+  const origin = req.headers.origin || ''
+  const host = req.headers.host || ''
+  let sameHost = false
+  try {
+    sameHost = new URL(origin).host === host
+  } catch {
+    /* 非法 origin */
+  }
+  if (origin && (DEV_ORIGINS.includes(origin) || EXTRA_ORIGINS.includes(origin) || sameHost)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-project-id')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204)
+  next()
+})
 app.use(express.json({ limit: '64kb' }))
 
-// 健康检查
+// 健康检查（精简：不暴露运行形态细节，完整状态仅打印在服务端启动日志）
 app.get('/api/health', (req, res) => {
-  ok(res, {
-    status: 'up',
-    mode: config.dingtalkEnabled ? 'dingtalk' : 'demo',
-    table: getTable().enabled,
-    ai: getAI().enabled,
-    time: new Date().toISOString(),
-  })
+  ok(res, { status: 'up', time: new Date().toISOString() })
 })
 
-// 登录无需鉴权，其余业务接口需登录
+// 登录免鉴权；jsapi-sign 需登录（录音等客户端能力均在登录后使用）
 app.use('/api', loginRoutes)
-app.use('/api', auth, workRoutes)
-app.use('/api', auth, aiRoutes)
-app.use('/api', auth, tasksRoutes)
+app.use('/api', auth, jsapiRouter)
+// 业务接口：登录 + 项目成员校验（防 x-project-id 跨项目越权）
+app.use('/api', auth, projectGuard, workRoutes)
+app.use('/api', auth, projectGuard, aiRoutes)
+app.use('/api', auth, projectGuard, tasksRoutes)
 app.use('/api', auth, settingsRoutes)
 app.use('/api', auth, projectsRoutes)
 
@@ -74,10 +94,11 @@ if (fs.existsSync(DIST)) {
 // 404（仅 API）
 app.use('/api', (req, res) => fail(res, '接口不存在', 404))
 
-// 统一异常出口
+// 统一异常出口：按错误类型透传 HTTP 状态码（body-parser 超限=413，其余带 status 属性的用其值，兜底 500）
 app.use((err, req, res, next) => {
   console.error('[server error]', err?.message || err)
-  fail(res, err?.message || '服务内部异常', 500)
+  const status = err?.type === 'entity.too.large' ? 413 : Number.isInteger(err?.status) && err.status >= 400 ? err.status : 500
+  res.status(status).json({ code: status, data: null, message: err?.message || '服务内部异常' })
 })
 
 app.listen(config.port, () => {

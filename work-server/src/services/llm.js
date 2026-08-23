@@ -37,10 +37,11 @@ export async function chat(messages, { budgetMs = 50_000 } = {}) {
     try {
       return await chatOnce(ai, model, messages, remain())
     } catch (err) {
-      // 限流或超时均切换备用模型，其余直接抛出
+      // 限流、超时或连续空内容均切换备用模型，其余直接抛出
       const rate = RETRYABLE.has(err?.response?.status) || RETRYABLE.has(err?.response?.data?.error?.code)
       const timeout = err instanceof AiTimeoutError
-      if (model !== models[models.length - 1] && (rate || timeout)) {
+      const empty = /空内容/.test(String(err?.message || ''))
+      if (model !== models[models.length - 1] && (rate || timeout || empty)) {
         console.warn(`[llm] 模型 ${model} ${timeout ? '超时' : '持续限流'}，切换备用模型...`)
         continue
       }
@@ -78,7 +79,14 @@ async function chatOnce(ai, model, messages, budgetMs = AI_TIMEOUT_MS) {
           signal: controller.signal,
         },
       )
-      return data?.choices?.[0]?.message?.content || ''
+      const content = String(data?.choices?.[0]?.message?.content || '').trim()
+      if (content) return content
+      // HTTP 200 但内容为空（限流时段偶发）：按可重试错误处理，重试耗尽抛明确错误
+      if (attempt < delays.length - 1) {
+        console.warn(`[llm] 模型 ${model} 返回空内容，重试...`)
+        continue
+      }
+      throw new Error('模型连续返回空内容')
     } catch (err) {
       const aborted = err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED' || controller.signal.aborted
       if (aborted) throw new AiTimeoutError()

@@ -11,7 +11,7 @@ export function auth(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
   const user = token && getUserByToken(token)
 
-  if (!user) return fail(res, '未登录或登录已过期', 401, 200)
+  if (!user) return fail(res, '未登录或登录已过期', 401)
   user.isAdmin = isAdmin(user.userId, user.source)
   // 当前项目：前端每次请求携带 x-project-id 头，未携带取默认（第一个项目）
   user.projectId = String(req.headers['x-project-id'] || '').trim()
