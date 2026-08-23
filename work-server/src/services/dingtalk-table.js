@@ -344,16 +344,16 @@ export async function listTaskCategories(operatorId, projectId = '') {
 }
 
 /**
- * 更新任务状态：PUT 任务表对应记录，仅改「状态」列
- * recordId 必须来自 listTasks 解析结果；status 值由路由层校验
+ * 更新任务记录：PUT 批量更新接口（钉钉Notable无单记录PUT，body内以 id 指定行，实测格式）
+ * recordId 必须来自 listTasks 解析结果；fields 为要覆盖的列值
  */
 async function updateTaskFields(recordId, fields, operatorId, projectId = '') {
   const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
   const { data } = await withRetry(
     async () =>
       HTTP.put(
-        `${TASK_SHEET(projectId)}/records/${encodeURIComponent(recordId)}?operatorId=${op}`,
-        { fields },
+        `${TASK_SHEET(projectId)}/records?operatorId=${op}`,
+        { records: [{ id: recordId, fields }] },
         { headers: await headers() },
       ),
     2,
