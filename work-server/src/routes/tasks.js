@@ -5,6 +5,17 @@ import { asyncRoute, fail, ok } from '../utils/respond.js'
 
 const router = Router()
 
+/** 任务状态合法值（与AI表格状态列选项一致） */
+const TASK_STATUSES = ['未开始', '进行中', '已完成']
+
+/** 当前用户是否该任务负责人（unionId精确匹配优先，负责人列只回姓名时按姓名兜底） */
+function isOwnerOf(task, user) {
+  const uid = user?.unionId || ''
+  if (uid && (task.ownerUnionIds || []).includes(uid)) return true
+  const name = String(user?.name || '').trim()
+  return Boolean(name) && String(task.owner || '').split('、').filter(Boolean).includes(name)
+}
+
 /**
  * GET /api/tasks 任务视图：任务清单 + 关联日志聚合（日志数/累计工时/最近更新）
  * 数据全部来自当前项目的钉钉AI表格（任务表 + 工作日志表原生关联），未接表格时返回 enabled:false
@@ -53,10 +64,40 @@ router.get(
     }
 
     const list = base
-      .map((t) => ({ ...t, ...(stat.get(t.recordId) || { logCount: 0, totalHours: 0, lastDate: '' }) }))
+      .map((t) => ({
+        ...t,
+        editable: isOwnerOf(t, req.user), // 仅负责人可改状态，前端据此显示可编辑视觉
+        ...(stat.get(t.recordId) || { logCount: 0, totalHours: 0, lastDate: '' }),
+      }))
       .sort((a, b) => b.logCount - a.logCount || String(b.lastDate).localeCompare(String(a.lastDate)))
 
     ok(res, { enabled: true, tasks: list })
+  }),
+)
+
+/**
+ * POST /api/tasks/:id/status 修改任务状态（仅负责人）
+ * body: { status } —— 值必须为 未开始/进行中/已完成
+ */
+router.post(
+  '/tasks/:id/status',
+  asyncRoute(async (req, res) => {
+    const pid = req.user.projectId
+    if (!getTable(pid).enabled) return fail(res, '未连接钉钉AI表格，任务视图不可用', 400)
+
+    const status = String(req.body?.status || '').trim()
+    if (!TASK_STATUSES.includes(status)) {
+      return fail(res, `无效状态：${status || '（空）'}，可选 ${TASK_STATUSES.join(' / ')}`, 400)
+    }
+
+    // 服务端权限校验：仅负责人可改（前端 editable 只是视觉，安全边界在这里）
+    const tasks = await table.listTasks(req.user.unionId || '', pid)
+    const task = tasks.find((t) => t.recordId === req.params.id)
+    if (!task) return fail(res, '任务不存在或已被删除', 404)
+    if (!isOwnerOf(task, req.user)) return fail(res, '仅任务负责人可修改状态', 403)
+
+    await table.updateTaskStatus(req.params.id, status, req.user.unionId || '', pid)
+    ok(res, { recordId: req.params.id, status })
   }),
 )
 

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onActivated, onMounted, ref } from 'vue'
-import { showFailToast } from 'vant'
-import { getTaskLogs, getTasks } from '../api'
+import { showFailToast, showSuccessToast, showToast } from 'vant'
+import { getTaskLogs, getTasks, updateTaskStatus } from '../api'
 import { fmtDate } from '../utils/format'
 import { initUser } from '../utils/user'
 import { projectStore, loadMyProjects } from '../utils/project'
@@ -29,7 +29,44 @@ const STATUS_META = {
   进行中: { color: '#1677ff', bg: 'rgba(22,119,255,.1)' },
   未开始: { color: '#969799', bg: 'rgba(150,151,153,.12)' },
 }
-const statusStyle = (s) => STATUS_META[s] || STATUS_META['未开始']
+const statusStyle = (s) => {
+  const m = STATUS_META[s] || STATUS_META['未开始']
+  return { color: m.color, backgroundColor: m.bg } // bg→backgroundColor：保证背景色真正生效
+}
+
+/* ===================== 状态修改（仅负责人） =====================
+ * 权限标记由后端下发（editable = 负责人含当前用户），前端只负责视觉与交互，
+ * 安全边界在服务端（POST /tasks/:id/status 再校验一次） */
+const STATUS_OPTIONS = ['未开始', '进行中', '已完成']
+const statusPopup = ref(false) // 状态修改弹窗显隐
+const statusTask = ref(null) // 正在改状态的任务
+const pickedStatus = ref('') // 弹窗内选中的新状态
+const statusSaving = ref(false)
+
+function onStatusClick(t) {
+  if (!t.editable) {
+    showToast('仅任务负责人可修改状态')
+    return
+  }
+  statusTask.value = t
+  pickedStatus.value = t.status || '未开始'
+  statusPopup.value = true
+}
+
+async function saveStatus() {
+  if (!statusTask.value || !pickedStatus.value || statusSaving.value) return
+  statusSaving.value = true
+  try {
+    await updateTaskStatus(statusTask.value.recordId, pickedStatus.value)
+    showSuccessToast(`已改为「${pickedStatus.value}」`)
+    statusPopup.value = false
+    await load() // 刷新统计卡/预警区/列表（缓存已在服务端失效）
+  } catch (err) {
+    showFailToast(err?.message || '状态更新失败，请重试')
+  } finally {
+    statusSaving.value = false
+  }
+}
 
 /* ===================== 到期统计与重点展示 ===================== */
 const DUE_SOON_DAYS = 3 // 距截止不足N天视为"即将到期"（需求阈值，按需调整）
@@ -229,7 +266,15 @@ onActivated(() => {
         >
           <div class="card-top">
             <div class="name">{{ t.title }}</div>
-            <span class="status" :style="statusStyle(t.status)">{{ t.status || '未开始' }}</span>
+            <span
+              class="status"
+              :class="{ editable: t.editable }"
+              :style="statusStyle(t.status)"
+              @click.stop="onStatusClick(t)"
+            >
+              {{ t.status || '未开始' }}
+              <van-icon v-if="t.editable" name="edit" />
+            </span>
           </div>
 
           <div class="meta">
@@ -261,6 +306,52 @@ onActivated(() => {
         </section>
       </template>
     </main>
+
+    <!-- 状态修改弹窗（仅负责人可触发）：任务信息 + 当前状态 + 新状态单选 + 确认/取消 -->
+    <van-popup v-model:show="statusPopup" position="bottom" round teleport="body">
+      <div class="sp">
+        <div class="sp-hd">
+          <div class="sp-title">修改任务状态</div>
+          <div class="sp-close" @click="statusPopup = false"><van-icon name="cross" /></div>
+        </div>
+
+        <div class="sp-task">
+          <div class="sp-task-name">{{ statusTask?.title }}</div>
+          <div v-if="statusTask?.owner" class="sp-task-meta">
+            <van-icon name="manager-o" /> {{ statusTask.owner }}
+            <template v-if="statusTask?.planDate"> · <van-icon name="clock-o" /> {{ statusTask.planDate }}</template>
+          </div>
+        </div>
+
+        <div class="sp-cur">
+          当前状态
+          <span class="status" :style="statusStyle(statusTask?.status)">{{ statusTask?.status || '未开始' }}</span>
+        </div>
+
+        <div class="sp-opts">
+          <button
+            v-for="s in STATUS_OPTIONS"
+            :key="s"
+            type="button"
+            class="sp-opt"
+            :class="{ active: pickedStatus === s }"
+            :style="pickedStatus === s ? { color: statusStyle(s).color, borderColor: statusStyle(s).color } : {}"
+            @click="pickedStatus = s"
+          >
+            <span class="sp-dot" :style="{ background: statusStyle(s).color }" />
+            {{ s }}
+            <van-icon v-if="pickedStatus === s" name="success" />
+          </button>
+        </div>
+
+        <div class="sp-actions">
+          <van-button block round plain type="default" :disabled="statusSaving" @click="statusPopup = false">
+            取消
+          </van-button>
+          <van-button block round type="primary" :loading="statusSaving" @click="saveStatus">确认修改</van-button>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -609,6 +700,107 @@ onActivated(() => {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 10px;
+}
+
+/* 可修改状态（当前用户为负责人）：虚线下划线+铅笔图标+按压反馈，明显区分于只读状态 */
+.status.editable {
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  transition: transform 0.12s;
+}
+.status.editable:active {
+  transform: scale(0.94);
+}
+.status.editable .van-icon {
+  font-size: 10px;
+}
+
+/* 状态修改弹窗 */
+.sp {
+  padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+}
+.sp-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.sp-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #323233;
+}
+.sp-close {
+  padding: 4px 8px;
+  color: #969799;
+  font-size: 16px;
+}
+.sp-task {
+  padding: 10px 12px;
+  background: #f7f8fa;
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.sp-task-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #323233;
+  line-height: 20px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sp-task-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #969799;
+}
+.sp-cur {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #646566;
+  margin-bottom: 12px;
+}
+.sp-opts {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.sp-opt {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px 0;
+  border: 1px solid #ebedf0;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  color: #323233;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sp-opt.active {
+  background: #f7f8fa;
+  font-weight: 600;
+}
+.sp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.sp-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .meta {

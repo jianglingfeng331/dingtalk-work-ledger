@@ -344,6 +344,33 @@ export async function listTaskCategories(operatorId, projectId = '') {
 }
 
 /**
+ * 更新任务状态：PUT 任务表对应记录，仅改「状态」列
+ * recordId 必须来自 listTasks 解析结果；status 值由路由层校验
+ */
+async function updateTaskFields(recordId, fields, operatorId, projectId = '') {
+  const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
+  const { data } = await withRetry(
+    async () =>
+      HTTP.put(
+        `${TASK_SHEET(projectId)}/records/${encodeURIComponent(recordId)}?operatorId=${op}`,
+        { fields },
+        { headers: await headers() },
+      ),
+    2,
+  )
+  return data
+}
+
+export function updateTaskStatus(recordId, status, operatorId, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) =>
+    updateTaskFields(recordId, { 状态: status }, op, projectId).then((r) => {
+      invalidate(projectId, 'tasks') // 状态改完任务页立即可见新值
+      return r
+    }),
+  )
+}
+
+/**
  * 计划写入任务表：{title, ownerUnionId, ownerName, planDate('YYYY-MM-DD'), category}
  * 状态默认「未开始」；负责人user列缺unionId时跳过该列（不阻断）
  * clientToken 幂等：补推重发不会在任务表产生重复行

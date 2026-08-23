@@ -103,6 +103,11 @@ export function getTaskLogs(taskId) {
   return request.get(`/tasks/${encodeURIComponent(taskId)}/logs`, { timeout: 30000 })
 }
 
+/** 修改任务状态（仅负责人，服务端二次校验） */
+export function updateTaskStatus(taskId, status) {
+  return request.post(`/tasks/${encodeURIComponent(taskId)}/status`, { status }, { timeout: 30000 })
+}
+
 /** 预解析工作内容（语音/文字 → 结构化字段预览，不入库） */
 export async function parseWork(content) {
   return request.post('/parse-work', { content })
