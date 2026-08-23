@@ -15,6 +15,15 @@ const expandedId = ref('') // 当前展开的任务
 const logsMap = ref({}) // taskId -> 日志列表缓存
 const logsLoading = ref({}) // taskId -> loading
 
+/* 团队/我的 视图切换：统计卡、预警区、任务清单整体联动 */
+const scope = ref('team') // 'team' 全部任务 | 'mine' 与我相关（负责人/参与人含本人）
+
+function setScope(s) {
+  if (scope.value === s || loading.value) return
+  scope.value = s
+  load()
+}
+
 const STATUS_META = {
   已完成: { color: '#07c160', bg: 'rgba(7,193,96,.1)' },
   进行中: { color: '#1677ff', bg: 'rgba(22,119,255,.1)' },
@@ -64,7 +73,7 @@ const shortDate = (d) => String(d || '').slice(5) || d
 async function load() {
   loading.value = true
   try {
-    const res = await getTasks()
+    const res = await getTasks(scope.value === 'mine' ? { mine: 1 } : {})
     enabled.value = res.enabled !== false
     tasks.value = res.tasks || []
     if (enabled.value && !tasks.value.length) return
@@ -110,16 +119,32 @@ onActivated(() => {
   <div class="page">
     <header class="hd">
       <div class="hd-title">任务</div>
-      <div class="hd-sub">{{ curProjectName ? `${curProjectName} · ` : '' }}共 {{ tasks.length }} 项 · 点卡片查看关联日志</div>
+      <div class="hd-sub">
+        {{ curProjectName ? `${curProjectName} · ` : '' }}{{ scope === 'mine' ? '我的' : '团队' }}共
+        {{ tasks.length }} 项 · 点卡片查看关联日志
+      </div>
       <van-icon name="replay" class="hd-refresh" @click="load" />
     </header>
 
     <main class="body">
+      <!-- 团队/我的 滑动门切换：全部区域数据联动 -->
+      <div v-if="enabled" class="scope-switch">
+        <div class="scope-track">
+          <span class="scope-thumb" :class="{ right: scope === 'mine' }" />
+          <button type="button" :class="{ active: scope === 'team' }" @click="setScope('team')">团队</button>
+          <button type="button" :class="{ active: scope === 'mine' }" @click="setScope('mine')">我的</button>
+        </div>
+      </div>
+
       <van-loading v-if="loading" class="tip" vertical>加载中...</van-loading>
 
       <van-empty v-else-if="!enabled" image="search" description="未连接钉钉AI表格，任务视图不可用" />
 
-      <van-empty v-else-if="!tasks.length" image="search" description="任务表暂无任务" />
+      <van-empty
+        v-else-if="!tasks.length"
+        image="search"
+        :description="scope === 'mine' ? '暂无与您相关的任务（负责人或参与人含您）' : '任务表暂无任务'"
+      />
 
       <template v-else>
         <!-- 统计卡片：总数 / 即将到期 / 已逾期 -->
@@ -280,6 +305,50 @@ onActivated(() => {
 }
 .tip {
   margin-top: 40px;
+}
+
+/* 团队/我的 滑动门切换：胶囊轨道 + 白色滑块 */
+.scope-switch {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+.scope-track {
+  position: relative;
+  display: flex;
+  width: 172px;
+  padding: 3px;
+  border-radius: 999px;
+  background: #eceef2;
+}
+.scope-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  transition: transform 0.25s cubic-bezier(0.22, 0.85, 0.32, 1);
+}
+.scope-thumb.right {
+  transform: translateX(100%);
+}
+.scope-track button {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 5px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #969799;
+  transition: color 0.2s;
+}
+.scope-track button.active {
+  color: #323233;
 }
 
 /* 统计卡片：三等分自适应（grid），数字大标签小，颜色区分状态 */

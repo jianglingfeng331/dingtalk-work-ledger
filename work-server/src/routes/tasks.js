@@ -20,7 +20,8 @@ router.get(
     const mine = req.query.mine === '1' || req.query.mine === 'true'
     const [tasks, logs] = await Promise.all([
       table.listTasks(op, pid),
-      mine ? null : table.listAllRecords({ operatorId: op, projectId: pid }),
+      // 两种模式都要日志聚合：任务卡"工时/日志数"徽标在"我的"模式下同样需要（30s缓存，代价小）
+      table.listAllRecords({ operatorId: op, projectId: pid }),
     ])
 
     // 我的相关任务：unionId 精确匹配优先；负责人/参与人列若只回姓名，则按姓名兜底
