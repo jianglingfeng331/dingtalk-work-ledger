@@ -58,6 +58,9 @@ function dueText(d) {
   return n > 0 ? `剩 ${n} 天` : `超 ${-n} 天`
 }
 
+/** 紧凑日期显示：MM-DD（预警区空间有限，年份省略） */
+const shortDate = (d) => String(d || '').slice(5) || d
+
 async function load() {
   loading.value = true
   try {
@@ -135,27 +138,61 @@ onActivated(() => {
           </div>
         </div>
 
-        <!-- 重点展示：逾期（红）/ 即将到期（黄），未完成且有计划节点的任务 -->
-        <div v-if="overdueList.length" class="focus-block overdue">
-          <div class="focus-title"><van-icon name="warning-o" /> 已逾期 {{ overdueList.length }} 项</div>
-          <div v-for="t in overdueList" :key="t.recordId" class="focus-item">
-            <span class="fi-name">{{ t.title }}</span>
-            <span class="fi-meta">
-              {{ t.owner || '未指派' }} · 截止 {{ t.planDate }} ·
-              <em class="fi-due">{{ dueText(t.planDate) }}</em>
-            </span>
-          </div>
-        </div>
+        <!-- 重点展示：逾期 / 临期（渐变底 + 悬浮任务行 + 剩余天数徽章） -->
+        <section v-if="overdueList.length" class="focus overdue" aria-label="已逾期任务">
+          <header class="focus-hd">
+            <span class="focus-ico"><van-icon name="warning-o" /></span>
+            <span class="focus-title">已逾期</span>
+            <span class="focus-count">{{ overdueList.length }} 项</span>
+          </header>
+          <ul class="focus-list">
+            <li
+              v-for="(t, i) in overdueList"
+              :key="t.recordId"
+              class="focus-item"
+              :style="{ animationDelay: `${Math.min(i, 6) * 45}ms` }"
+            >
+              <div class="fi-main">
+                <p class="fi-name">{{ t.title }}</p>
+                <p class="fi-meta">
+                  <span><van-icon name="manager-o" />{{ t.owner || '未指派' }}</span>
+                  <span class="fi-date"><van-icon name="calendar-o" />{{ shortDate(t.planDate) }}</span>
+                </p>
+              </div>
+              <span class="fi-chip">{{ dueText(t.planDate) }}</span>
+            </li>
+          </ul>
+        </section>
 
-        <div v-if="dueSoonList.length" class="focus-block soon">
-          <div class="focus-title"><van-icon name="clock-o" /> {{ DUE_SOON_DAYS }}天内到期 {{ dueSoonList.length }} 项</div>
-          <div v-for="t in dueSoonList" :key="t.recordId" class="focus-item">
-            <span class="fi-name">{{ t.title }}</span>
-            <span class="fi-meta">
-              {{ t.owner || '未指派' }} · 截止 {{ t.planDate }} ·
-              <em class="fi-due">{{ dueText(t.planDate) }}</em>
-            </span>
-          </div>
+        <section v-if="dueSoonList.length" class="focus soon" aria-label="即将到期任务">
+          <header class="focus-hd">
+            <span class="focus-ico"><van-icon name="underway-o" /></span>
+            <span class="focus-title">{{ DUE_SOON_DAYS }}天内到期</span>
+            <span class="focus-count">{{ dueSoonList.length }} 项</span>
+          </header>
+          <ul class="focus-list">
+            <li
+              v-for="(t, i) in dueSoonList"
+              :key="t.recordId"
+              class="focus-item"
+              :style="{ animationDelay: `${Math.min(i, 6) * 45}ms` }"
+            >
+              <div class="fi-main">
+                <p class="fi-name">{{ t.title }}</p>
+                <p class="fi-meta">
+                  <span><van-icon name="manager-o" />{{ t.owner || '未指派' }}</span>
+                  <span class="fi-date"><van-icon name="calendar-o" />{{ shortDate(t.planDate) }}</span>
+                </p>
+              </div>
+              <span class="fi-chip" :class="{ hot: dayDiff(t.planDate) === 0 }">{{ dueText(t.planDate) }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <!-- 无逾期无临期：正向反馈条 -->
+        <div v-if="!overdueList.length && !dueSoonList.length" class="focus-ok">
+          <van-icon name="checked" />
+          暂无逾期与临期任务，一切按计划推进
         </div>
 
         <section
@@ -250,20 +287,23 @@ onActivated(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .stat-card {
   background: #fff;
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 12px 4px 10px;
   text-align: center;
   min-width: 0; /* 允许窄屏压缩 */
+  border: 1px solid rgba(0, 0, 0, 0.035);
 }
 .stat-num {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.2;
+  font-size: 26px;
+  font-weight: 750;
+  line-height: 1.15;
   color: #323233;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
 }
 .stat-label {
   margin-top: 3px;
@@ -272,76 +312,204 @@ onActivated(() => {
   white-space: nowrap;
 }
 .stat-soon {
-  background: #fff8f2; /* 黄/橙：即将到期 */
+  background: linear-gradient(160deg, rgba(255, 151, 106, 0.13), rgba(255, 151, 106, 0.03) 70%);
+  border-color: rgba(255, 151, 106, 0.16);
 }
 .stat-soon .stat-num {
-  color: #ff9760;
+  color: #ef7a3c;
 }
 .stat-overdue {
-  background: #fef2f2; /* 红：已逾期 */
+  background: linear-gradient(160deg, rgba(238, 10, 36, 0.09), rgba(238, 10, 36, 0.02) 70%);
+  border-color: rgba(238, 10, 36, 0.12);
 }
 .stat-overdue .stat-num {
   color: #ee0a24;
 }
 
-/* 重点展示区：逾期/即将到期明细（名称+负责人+截止日） */
-.focus-block {
-  background: #fff;
-  border-radius: 12px;
-  padding: 10px 14px;
-  margin-bottom: 10px;
-  border-left: 3px solid transparent;
+/* ===== 重点展示区：渐变底容器 + 悬浮任务行 ===== */
+.focus {
+  position: relative;
+  border-radius: 16px;
+  padding: 12px 10px 4px;
+  margin-bottom: 12px;
+  overflow: hidden;
 }
-.focus-block.overdue {
-  border-left-color: #ee0a24;
+.focus.overdue {
+  background: linear-gradient(165deg, rgba(238, 10, 36, 0.07), rgba(238, 10, 36, 0.015) 60%);
+  border: 1px solid rgba(238, 10, 36, 0.1);
 }
-.focus-block.soon {
-  border-left-color: #ff9760;
+.focus.soon {
+  background: linear-gradient(165deg, rgba(255, 151, 106, 0.11), rgba(255, 151, 106, 0.02) 60%);
+  border: 1px solid rgba(255, 151, 106, 0.16);
 }
-.focus-title {
-  font-size: 13px;
-  font-weight: 600;
+
+.focus-hd {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 7px;
+  padding: 0 4px 10px;
 }
-.focus-block.overdue .focus-title {
+.focus-ico {
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+.overdue .focus-ico {
+  background: rgba(238, 10, 36, 0.12);
   color: #ee0a24;
 }
-.focus-block.soon .focus-title {
-  color: #ff9760;
+.soon .focus-ico {
+  background: rgba(255, 151, 106, 0.16);
+  color: #ef7a3c;
+}
+.focus-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+.overdue .focus-title {
+  color: #c8202f;
+}
+.soon .focus-title {
+  color: #c96a2f;
+}
+.focus-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+}
+.overdue .focus-count {
+  color: #ee0a24;
+  border: 1px solid rgba(238, 10, 36, 0.14);
+}
+.soon .focus-count {
+  color: #ef7a3c;
+  border: 1px solid rgba(255, 151, 106, 0.22);
+}
+
+.focus-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 .focus-item {
-  padding: 7px 0;
-  border-top: 1px dashed #ebedf0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(0, 0, 0, 0.035);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  animation: fi-rise 0.32s cubic-bezier(0.22, 0.85, 0.32, 1) backwards;
+  transition: transform 0.15s ease;
 }
-.focus-item:first-of-type {
-  margin-top: 6px;
+.focus-item:active {
+  transform: scale(0.98);
+}
+.overdue .focus-item {
+  box-shadow: 0 1px 3px rgba(238, 10, 36, 0.05);
+}
+.soon .focus-item {
+  box-shadow: 0 1px 3px rgba(255, 151, 106, 0.07);
+}
+
+.fi-main {
+  flex: 1;
+  min-width: 0;
 }
 .fi-name {
-  display: block;
   font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
-  word-break: break-all;
+  font-weight: 600;
+  line-height: 1.45;
   color: #323233;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .fi-meta {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: 3px;
+  display: flex;
+  gap: 12px;
+  font-size: 11.5px;
   color: #969799;
-  word-break: break-all;
+  min-width: 0;
 }
-.fi-due {
-  font-style: normal;
-  font-weight: 600;
+.fi-meta .van-icon {
+  font-size: 11px;
+  vertical-align: -1.5px;
+  margin-right: 2px;
 }
-.focus-block.overdue .fi-due {
+.fi-meta > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 剩余天数徽章：逾期/临期软色底，今日到期实心渐变强提醒 */
+.fi-chip {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.overdue .fi-chip {
   color: #ee0a24;
+  background: rgba(238, 10, 36, 0.08);
+  border: 1px solid rgba(238, 10, 36, 0.16);
 }
-.focus-block.soon .fi-due {
-  color: #ff9760;
+.soon .fi-chip {
+  color: #d96b32;
+  background: rgba(255, 151, 106, 0.12);
+  border: 1px solid rgba(255, 151, 106, 0.2);
+}
+.fi-chip.hot {
+  color: #fff;
+  background: linear-gradient(135deg, #ffb03a, #ff7038);
+  border: none;
+  box-shadow: 0 2px 6px rgba(255, 112, 56, 0.35);
+}
+
+@keyframes fi-rise {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .focus-item {
+    animation: none;
+  }
+}
+
+/* 无预警正向反馈条 */
+.focus-ok {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #07c160;
+  background: rgba(7, 193, 96, 0.06);
+  border: 1px solid rgba(7, 193, 96, 0.12);
+  border-radius: 12px;
+  padding: 9px;
+  margin-bottom: 12px;
+}
+.focus-ok .van-icon {
+  font-size: 13px;
 }
 
 .card {
