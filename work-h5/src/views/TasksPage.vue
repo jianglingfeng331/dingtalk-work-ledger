@@ -2,6 +2,7 @@
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { showFailToast } from 'vant'
 import { getTaskLogs, getTasks } from '../api'
+import { fmtDate } from '../utils/format'
 import { initUser } from '../utils/user'
 import { projectStore, loadMyProjects } from '../utils/project'
 
@@ -20,6 +21,42 @@ const STATUS_META = {
   未开始: { color: '#969799', bg: 'rgba(150,151,153,.12)' },
 }
 const statusStyle = (s) => STATUS_META[s] || STATUS_META['未开始']
+
+/* ===================== 到期统计与重点展示 ===================== */
+const DUE_SOON_DAYS = 3 // 距截止不足N天视为"即将到期"（需求阈值，按需调整）
+
+/** 计划节点距今天数：今天=0，昨天=-1；无日期/格式异常返回 null */
+const dayDiff = (d) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d || ''))) return null
+  const n = Math.round((Date.parse(d) - Date.parse(fmtDate())) / 86400000)
+  return Number.isFinite(n) ? n : null
+}
+
+// 到期预警只针对未完成且已设计划节点的任务（已完成不预警）
+const openTasks = computed(() => tasks.value.filter((t) => t.status !== '已完成' && dayDiff(t.planDate) != null))
+
+// 已逾期：超截止日（最早的排前，最紧急一目了然）
+const overdueList = computed(() =>
+  openTasks.value.filter((t) => dayDiff(t.planDate) < 0).sort((a, b) => a.planDate.localeCompare(b.planDate)),
+)
+
+// 即将到期：距截止不足N天（含今天），最近到期的排前
+const dueSoonList = computed(() =>
+  openTasks.value
+    .filter((t) => {
+      const d = dayDiff(t.planDate)
+      return d != null && d >= 0 && d < DUE_SOON_DAYS
+    })
+    .sort((a, b) => a.planDate.localeCompare(b.planDate)),
+)
+
+/** 截止日友好文案：今天到期 / 剩N天 / 超N天 */
+function dueText(d) {
+  const n = dayDiff(d)
+  if (n == null) return ''
+  if (n === 0) return '今天到期'
+  return n > 0 ? `剩 ${n} 天` : `超 ${-n} 天`
+}
 
 async function load() {
   loading.value = true
@@ -82,6 +119,45 @@ onActivated(() => {
       <van-empty v-else-if="!tasks.length" image="search" description="任务表暂无任务" />
 
       <template v-else>
+        <!-- 统计卡片：总数 / 即将到期 / 已逾期 -->
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-num">{{ tasks.length }}</div>
+            <div class="stat-label">任务总数</div>
+          </div>
+          <div class="stat-card stat-soon">
+            <div class="stat-num">{{ dueSoonList.length }}</div>
+            <div class="stat-label">{{ DUE_SOON_DAYS }}天内到期</div>
+          </div>
+          <div class="stat-card stat-overdue">
+            <div class="stat-num">{{ overdueList.length }}</div>
+            <div class="stat-label">已逾期</div>
+          </div>
+        </div>
+
+        <!-- 重点展示：逾期（红）/ 即将到期（黄），未完成且有计划节点的任务 -->
+        <div v-if="overdueList.length" class="focus-block overdue">
+          <div class="focus-title"><van-icon name="warning-o" /> 已逾期 {{ overdueList.length }} 项</div>
+          <div v-for="t in overdueList" :key="t.recordId" class="focus-item">
+            <span class="fi-name">{{ t.title }}</span>
+            <span class="fi-meta">
+              {{ t.owner || '未指派' }} · 截止 {{ t.planDate }} ·
+              <em class="fi-due">{{ dueText(t.planDate) }}</em>
+            </span>
+          </div>
+        </div>
+
+        <div v-if="dueSoonList.length" class="focus-block soon">
+          <div class="focus-title"><van-icon name="clock-o" /> {{ DUE_SOON_DAYS }}天内到期 {{ dueSoonList.length }} 项</div>
+          <div v-for="t in dueSoonList" :key="t.recordId" class="focus-item">
+            <span class="fi-name">{{ t.title }}</span>
+            <span class="fi-meta">
+              {{ t.owner || '未指派' }} · 截止 {{ t.planDate }} ·
+              <em class="fi-due">{{ dueText(t.planDate) }}</em>
+            </span>
+          </div>
+        </div>
+
         <section
           v-for="t in tasks"
           :key="t.recordId"
@@ -167,6 +243,105 @@ onActivated(() => {
 }
 .tip {
   margin-top: 40px;
+}
+
+/* 统计卡片：三等分自适应（grid），数字大标签小，颜色区分状态 */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.stat-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px 4px 10px;
+  text-align: center;
+  min-width: 0; /* 允许窄屏压缩 */
+}
+.stat-num {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #323233;
+}
+.stat-label {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #969799;
+  white-space: nowrap;
+}
+.stat-soon {
+  background: #fff8f2; /* 黄/橙：即将到期 */
+}
+.stat-soon .stat-num {
+  color: #ff9760;
+}
+.stat-overdue {
+  background: #fef2f2; /* 红：已逾期 */
+}
+.stat-overdue .stat-num {
+  color: #ee0a24;
+}
+
+/* 重点展示区：逾期/即将到期明细（名称+负责人+截止日） */
+.focus-block {
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  border-left: 3px solid transparent;
+}
+.focus-block.overdue {
+  border-left-color: #ee0a24;
+}
+.focus-block.soon {
+  border-left-color: #ff9760;
+}
+.focus-title {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.focus-block.overdue .focus-title {
+  color: #ee0a24;
+}
+.focus-block.soon .focus-title {
+  color: #ff9760;
+}
+.focus-item {
+  padding: 7px 0;
+  border-top: 1px dashed #ebedf0;
+}
+.focus-item:first-of-type {
+  margin-top: 6px;
+}
+.fi-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  word-break: break-all;
+  color: #323233;
+}
+.fi-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #969799;
+  word-break: break-all;
+}
+.fi-due {
+  font-style: normal;
+  font-weight: 600;
+}
+.focus-block.overdue .fi-due {
+  color: #ee0a24;
+}
+.focus-block.soon .fi-due {
+  color: #ff9760;
 }
 
 .card {
