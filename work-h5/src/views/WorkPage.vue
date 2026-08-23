@@ -704,14 +704,14 @@ onMounted(async () => {
             class="confirm-input"
           />
 
-          <!-- 所选关联任务回显（可在确认卡里改选） -->
+          <!-- 所选关联任务回显（可在确认卡里改选）：单行省略+固定行高，选中/未选高度一致不跳动 -->
           <template v-if="myTasks.length">
             <div class="field-label">
               关联任务
               <van-tag plain type="primary" size="mini">{{ selectedTaskId ? '已选' : '未选·将智能匹配' }}</van-tag>
             </div>
-            <div class="plan-cell" @click="showTaskPicker = true">
-              <span :class="{ placeholder: !selectedTaskTitle }">
+            <div class="plan-cell task-cell" @click="showTaskPicker = true">
+              <span class="task-name" :class="{ placeholder: !selectedTaskTitle }">
                 {{ selectedTaskTitle || '点击选择任务' }}
               </span>
               <van-icon name="arrow" />
@@ -889,6 +889,9 @@ onMounted(async () => {
 
 .task-field :deep(.van-field__control) {
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* 长任务名单行省略，行高不随选中状态变化 */
 }
 
 .task-clear {
@@ -1135,6 +1138,20 @@ onMounted(async () => {
 
 .plan-cell .placeholder {
   color: #c8c9cc;
+}
+
+/* 关联任务选择行：任务名单行省略+固定行高，选中长名与未选中高度完全一致，避免确认卡内容跳动 */
+.plan-cell.task-cell {
+  min-height: 44px; /* 12px上下padding + 20px行高，锁死行盒 */
+  box-sizing: border-box;
+}
+.task-cell .task-name {
+  flex: 1;
+  min-width: 0; /* flex子项允许收缩，省略号才能生效 */
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .confirm-input {
