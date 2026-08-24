@@ -107,8 +107,18 @@ function dueText(d) {
 /** 紧凑日期显示：MM-DD（预警区空间有限，年份省略） */
 const shortDate = (d) => String(d || '').slice(5) || d
 
+/** 无可用项目（非成员/未配置）：空态引导，不发请求（后端已拒绝空项目ID兜底默认项目） */
+const noProject = ref(false)
+
 /** 加载任务清单；force=true 绕过服务端缓存强制回源钉钉（表格侧改负责人等外部修改立即同步） */
 async function load(force = false) {
+  if (!projectStore.projectId) {
+    noProject.value = true
+    enabled.value = true
+    tasks.value = []
+    return
+  }
+  noProject.value = false
   loading.value = true
   try {
     const params = scope.value === 'mine' ? { mine: 1 } : {}
@@ -190,6 +200,12 @@ onActivated(() => {
       </div>
 
       <van-loading v-if="loading" class="tip" vertical>加载中...</van-loading>
+
+      <van-empty
+        v-else-if="noProject"
+        image="search"
+        description="暂无可用项目：请联系管理员在项目成员表中添加你"
+      />
 
       <van-empty v-else-if="!enabled" image="search" description="未连接钉钉AI表格，任务视图不可用" />
 
