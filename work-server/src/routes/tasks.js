@@ -20,6 +20,7 @@ function isOwnerOf(task, user) {
  * GET /api/tasks 任务视图：任务清单 + 关联日志聚合（日志数/累计工时/最近更新）
  * 数据全部来自当前项目的钉钉AI表格（任务表 + 工作日志表原生关联），未接表格时返回 enabled:false
  * ?mine=1 只返回与当前用户相关的任务（负责人或参与人含该用户；无参与人列时仅按负责人）
+ * ?refresh=1 绕过缓存强制回源钉钉（表格侧改了负责人等外部修改，H5下拉刷新用）
  */
 router.get(
   '/tasks',
@@ -29,8 +30,9 @@ router.get(
     if (!getTable(pid).enabled) return ok(res, { enabled: false, tasks: [] })
 
     const mine = req.query.mine === '1' || req.query.mine === 'true'
+    const force = req.query.refresh === '1' || req.query.refresh === 'true'
     const [tasks, logs] = await Promise.all([
-      table.listTasks(op, pid),
+      table.listTasks(op, pid, { force }),
       // 两种模式都要日志聚合：任务卡"工时/日志数"徽标在"我的"模式下同样需要（30s缓存，代价小）
       table.listAllRecords({ operatorId: op, projectId: pid }),
     ])

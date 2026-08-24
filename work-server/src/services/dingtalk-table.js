@@ -230,12 +230,15 @@ function parseUserCol(raw) {
 }
 
 /** 拉取任务表全量：[{recordId, title, owner, ownerUnionIds, memberUnionIds, status, planDate, category}]
- *  负责人/参与人（列存在时）均提取 unionId，供"我的任务"按人过滤 */
-async function fetchTasks(operatorId, projectId = '') {
+ *  负责人/参与人（列存在时）均提取 unionId，供"我的任务"按人过滤
+ *  缓存30秒 + force 强刷：钉钉表格侧的外部修改（如改负责人）30秒内自动同步，
+ *  H5 下拉刷新/手动刷新传 force 立即回源（钉钉Notable API 读取本身是实时的）
+ */
+async function fetchTasks(operatorId, projectId = '', { force = false } = {}) {
   const t = getTable(projectId)
   if (!t.taskSheetName) return []
   const b = bucketOf(projectId)
-  if (b.tasks && Date.now() < b.tasks.expireAt) return b.tasks.list
+  if (!force && b.tasks && Date.now() < b.tasks.expireAt) return b.tasks.list
 
   const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
   const url = (nextToken) =>
@@ -272,13 +275,13 @@ async function fetchTasks(operatorId, projectId = '') {
     nextToken = data?.nextToken || ''
   } while (nextToken)
 
-  b.tasks = { list, expireAt: Date.now() + 5 * 60_000 }
+  b.tasks = { list, expireAt: Date.now() + 30_000 }
   return list
 }
 
-/** 任务表全量（导出）：权限兜底后拉取 */
-export function listTasks(operatorId, projectId = '') {
-  return withPermFallback(operatorId, projectId, (op) => fetchTasks(op, projectId))
+/** 任务表全量（导出）：权限兜底后拉取；opts.force 绕过缓存强制回源钉钉 */
+export function listTasks(operatorId, projectId = '', opts = {}) {
+  return withPermFallback(operatorId, projectId, (op) => fetchTasks(op, projectId, opts))
 }
 
 /* ===================== 计划（任务表写入） ===================== */

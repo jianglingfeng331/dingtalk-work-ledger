@@ -107,10 +107,13 @@ function dueText(d) {
 /** 紧凑日期显示：MM-DD（预警区空间有限，年份省略） */
 const shortDate = (d) => String(d || '').slice(5) || d
 
-async function load() {
+/** 加载任务清单；force=true 绕过服务端缓存强制回源钉钉（表格侧改负责人等外部修改立即同步） */
+async function load(force = false) {
   loading.value = true
   try {
-    const res = await getTasks(scope.value === 'mine' ? { mine: 1 } : {})
+    const params = scope.value === 'mine' ? { mine: 1 } : {}
+    if (force) params.refresh = 1
+    const res = await getTasks(params)
     enabled.value = res.enabled !== false
     tasks.value = res.tasks || []
     if (enabled.value && !tasks.value.length) return
@@ -120,6 +123,17 @@ async function load() {
     showFailToast(err?.message || '加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+/** 下拉刷新：强制回源钉钉表格（外部修改立即可见） */
+const pulling = ref(false)
+async function onPull() {
+  try {
+    await load(true)
+    showSuccessToast('已同步钉钉表格')
+  } finally {
+    pulling.value = false
   }
 }
 
@@ -160,10 +174,12 @@ onActivated(() => {
         {{ curProjectName ? `${curProjectName} · ` : '' }}{{ scope === 'mine' ? '我的' : '团队' }}共
         {{ tasks.length }} 项 · 点卡片查看关联日志
       </div>
-      <van-icon name="replay" class="hd-refresh" @click="load" />
+      <van-icon name="replay" class="hd-refresh" title="同步钉钉表格" @click="load(true)" />
     </header>
 
     <main class="body">
+      <!-- 下拉刷新：绕过缓存强制回源钉钉，表格侧改负责人等外部修改立即可见 -->
+      <van-pull-refresh v-model="pulling" success-text="已同步钉钉表格" @refresh="onPull">
       <!-- 团队/我的 滑动门切换：全部区域数据联动 -->
       <div v-if="enabled" class="scope-switch">
         <div class="scope-track">
@@ -305,6 +321,7 @@ onActivated(() => {
           </div>
         </section>
       </template>
+      </van-pull-refresh>
     </main>
 
     <!-- 状态修改弹窗（仅负责人可触发）：任务信息 + 当前状态 + 新状态单选 + 确认/取消 -->
