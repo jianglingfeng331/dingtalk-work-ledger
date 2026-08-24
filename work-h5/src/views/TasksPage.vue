@@ -16,7 +16,7 @@ const logsMap = ref({}) // taskId -> 日志列表缓存
 const logsLoading = ref({}) // taskId -> loading
 
 /* 团队/我的 视图切换：统计卡、预警区、任务清单整体联动 */
-const scope = ref('team') // 'team' 全部任务 | 'mine' 与我相关（负责人/参与人含本人）
+const scope = ref('mine') // 'mine' 与我相关（负责人/参与人含本人，默认） | 'team' 全部任务
 
 function setScope(s) {
   if (scope.value === s || loading.value) return
