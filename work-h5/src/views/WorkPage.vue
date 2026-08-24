@@ -357,16 +357,17 @@ const selectedTaskTitle = computed(
   () => myTasks.value.find((t) => t.recordId === selectedTaskId.value)?.title || '',
 )
 
-/** 拉取"我的任务"：失败不阻断记日志，仅隐藏手选入口 */
+/** 拉取"我的任务"：失败不阻断记日志，仅隐藏手选入口
+ *  已完成任务不再出现在可选列表（任务模块视图不受影响，仍完整展示） */
 async function loadMyTasks() {
   try {
     const res = await getTasks({ mine: 1 })
     if (res?.enabled === false) {
       myTasks.value = []
     } else {
-      myTasks.value = res?.tasks || []
+      myTasks.value = (res?.tasks || []).filter((t) => t.status !== '已完成')
     }
-    // 已选任务不在列表（被删/被移出）时清空，避免提交无效关联
+    // 已选任务不在列表（被删/被移出/已完成）时清空，避免提交无效关联
     if (selectedTaskId.value && !myTasks.value.some((t) => t.recordId === selectedTaskId.value)) {
       selectedTaskId.value = ''
     }
