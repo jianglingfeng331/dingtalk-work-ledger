@@ -8,6 +8,7 @@ import { addPlanRecord, listMembers, listTaskCategories } from '../services/ding
 import { enqueue, pendingStat } from '../services/pending-push.js'
 import crypto from 'node:crypto'
 import { asyncRoute, fail, ok } from '../utils/respond.js'
+import { checkText } from '../utils/text-guard.js'
 
 const router = Router()
 
@@ -30,6 +31,8 @@ router.post(
   asyncRoute(async (req, res) => {
     const content = String(req.body?.content || '').trim()
     if (!content) return fail(res, '内容不能为空')
+    const bad = checkText(content, '工作内容', req.user)
+    if (bad) return fail(res, bad, 400)
     ok(res, parseWorkContent(content, getSettings().tags))
   }),
 )
@@ -46,10 +49,12 @@ router.post(
     if (!req.body?.length) return fail(res, '未收到音频数据')
     const errors = []
     let xfyunErr = ''
-    // 1) 讯飞（配置齐备时）
+    // 1) 讯飞（配置齐备时）；识别文本异常编码时直接报错（不让乱码进入输入框）
     if (getAsr().enabled) {
       try {
         const text = await xfyun.transcribe(req.body)
+        const bad = checkText(text, '语音识别结果', req.user)
+        if (bad) return fail(res, bad, 400)
         return ok(res, { text, engine: 'xfyun' })
       } catch (err) {
         xfyunErr = err?.message || '识别失败'
@@ -58,6 +63,8 @@ router.post(
     // 2) 智谱 GLM-ASR 兜底（需账户余额）
     try {
       const text = await transcribe(req.body)
+      const bad = checkText(text, '语音识别结果', req.user)
+      if (bad) return fail(res, bad, 400)
       return ok(res, { text, engine: 'zhipu' })
     } catch (err) {
       errors.push(err?.message || '识别失败')
@@ -114,6 +121,8 @@ router.post(
     const content = stripHtmlTags(String(req.body?.content || '').trim())
     if (!content) return fail(res, '工作内容不能为空')
     if (content.length > 500) return fail(res, '内容过长，请控制在500字以内')
+    const bad = checkText(content, '工作内容', req.user)
+    if (bad) return fail(res, bad, 400)
 
     const dedupMs = (getSettings().dedupWindowSec || 60) * 1000
     const last = lastSubmit.get(req.user.userId)
@@ -198,6 +207,8 @@ router.post(
   asyncRoute(async (req, res) => {
     const content = String(req.body?.content || '').trim()
     if (!content) return fail(res, '内容不能为空')
+    const bad = checkText(content, '计划描述', req.user)
+    if (bad) return fail(res, bad, 400)
 
     const op = req.user.unionId || ''
     const pid = req.user.projectId
@@ -258,6 +269,8 @@ router.post(
     const { title, ownerName, planDate, category } = req.body || {}
     if (!title || !stripHtmlTags(String(title))) return fail(res, '任务标题不能为空')
     if (!ownerName) return fail(res, '请选择负责人')
+    const bad = checkText(title, '任务标题', req.user) || checkText(category, '任务分类', req.user)
+    if (bad) return fail(res, bad, 400)
 
     const op = req.user.unionId || ''
     const pid = req.user.projectId
