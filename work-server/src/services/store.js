@@ -5,6 +5,8 @@ import { config } from '../config.js'
 import * as table from './dingtalk-table.js'
 import { enqueue } from './pending-push.js'
 import { DATA_DIR, getTable, listProjects } from './settings.js'
+import { invalidateMcpCache } from './mcp-cache.js'
+import { scheduleProgressSync } from './directive.js'
 
 /**
  * 数据存储层（门面）
@@ -87,9 +89,11 @@ export async function addRecord({ user, rawContent, parsed, projectId = '', task
   }
 
   let pendingSync = false
+  let linkedTaskId = ''
   if (getTable(projectId).enabled) {
     try {
-      await table.addRecord(record, user.unionId, projectId)
+      const written = await table.addRecord(record, user.unionId, projectId)
+      linkedTaskId = written?.linkedTaskRecordId || ''
     } catch (err) {
       pendingSync = true
       record.pendingSync = true
@@ -100,7 +104,10 @@ export async function addRecord({ user, rawContent, parsed, projectId = '', task
 
   mirror.unshift(record)
   persist()
-  return { ...record, pendingSync }
+  invalidateMcpCache() // 数据变更即失效 MCP 缓存，保证后续查询新鲜度
+  // 日志关联到领导指令任务时：延迟归纳当日日志 → 同步指令「执行进展」（fire-and-forget，不阻断响应）
+  if (linkedTaskId) scheduleProgressSync(projectId, linkedTaskId)
+  return { ...record, pendingSync, linkedTaskId }
 }
 
 /** 补推成功后：镜像清除待补推标记 */

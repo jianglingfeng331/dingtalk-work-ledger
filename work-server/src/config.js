@@ -19,6 +19,6 @@ export const config = {
   },
 
   // 开发期允许浏览器访客登录（无需免登码，走真实后端会话）
-  // 钉钉内始终优先免登；生产公网部署请设 ALLOW_DEV_LOGIN=0 关闭
-  allowDevLogin: process.env.ALLOW_DEV_LOGIN !== '0',
+  // 钉钉内始终优先免登；默认关闭，需显式 ALLOW_DEV_LOGIN=1 才开启（生产安全默认拒绝）
+  allowDevLogin: process.env.ALLOW_DEV_LOGIN === '1',
 }

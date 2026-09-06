@@ -8,10 +8,18 @@
 node_modules/
 dist/
 
+# 桌面版（Electron）构建产物
+desktop/release/
+desktop/dist/
+
 # 运行时数据与密钥（绝不入库：钉钉凭据/AI Key/业务数据）
 work-server/.env
 work-server/data/
 *.log
+
+# 临时测试脚本
+test-sem.mjs
+*.mjs.bak
 
 # 根目录非代码交付物（仅忽略根目录，不影响源码内的图片资源）
 /*.zip

@@ -9,6 +9,26 @@ import axios from 'axios'
  */
 let reloginFn = null
 
+/* 版本自动升级：服务端在 /api 响应头 X-App-Entry 携带当前线上入口JS文件名；
+ * 若与本页面实际加载的入口不一致（钉钉webview缓存旧版HTML长期不回源），说明有新版本，
+ * 在会话首次请求时自动换URL刷新升级（sessionStorage 防循环；仅启动期触发，不打断输入）。 */
+let versionChecked = false
+function checkAppVersion(headers) {
+  if (versionChecked) return
+  versionChecked = true
+  try {
+    const myEntry = document.querySelector('script[type="module"][src]')?.getAttribute('src') || ''
+    const latest = headers?.['x-app-entry'] || ''
+    if (!myEntry.startsWith('/assets/') || !latest || myEntry === latest) return
+    if (sessionStorage.getItem('work_version_reloaded')) return
+    sessionStorage.setItem('work_version_reloaded', '1')
+    const search = location.search.replace(/([?&])_r=\d+&?/, '$1').replace(/[?&]$/, '')
+    location.replace(location.pathname + search + (search ? '&' : '?') + '_r=' + Date.now() + location.hash)
+  } catch {
+    /* ignore */
+  }
+}
+
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 15000,
@@ -55,6 +75,7 @@ request.interceptors.response.use(
     return body.data
   },
   async (err) => {
+    checkAppVersion(err?.response?.headers)
     // 后端错误已透传真实 HTTP 状态码（401/403/404等）：从响应体提取 {code,message}，
     // 与成功路径同构处理（401 自愈重试 / 非 0 抛中文错误），避免露出 axios 英文报错
     const body = err?.response?.data

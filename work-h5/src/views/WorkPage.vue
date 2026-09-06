@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { showFailToast, showSuccessToast, showToast } from 'vant'
-import { enrichWork, getPlanOptions, getTasks, getWorkList, parsePlan, parseWork, runtime, submitPlan, submitWork } from '../api'
+import { enrichWork, getPlanOptions, getTasks, getWorkList, parseDirective, parsePlan, parseWork, runtime, submitDirective, submitPlan, submitWork } from '../api'
 import { fmtDate } from '../utils/format'
 import { initUser, userStore } from '../utils/user'
 import { loadMyProjects, projectStore } from '../utils/project'
@@ -86,13 +86,19 @@ function onTouchStart(e) {
   startSpeech()
 }
 
-/** 长按开始：优先 WebSpeech，失败自动切云端录音 */
+/** 长按开始：钉钉容器内直接走原生JSAPI录音（系统级授权一次生效）；浏览器优先 WebSpeech，失败自动切云端录音 */
 function startSpeech() {
   if (recognizing.value || transcribing.value) return
   clearTimeout(pressTimer)
   pressTimer = setTimeout(async () => {
     recognizing.value = true
     engine.value = ''
+
+    // 钉钉容器：跳过 WebSpeech/浏览器录音（webview 级麦克风授权每次打开应用都会重新弹窗）
+    if (isDingTalkEnv()) {
+      await switchToCloud()
+      return
+    }
 
     // 引擎1：WebSpeech（谷歌服务，需可访问外网）
     if (speechSupported) {
@@ -207,49 +213,60 @@ function settlePending() {
   }
 }
 
-/** 切换云端录音引擎（按住期间无缝切换）：浏览器录音优先，钉钉容器内兜底 JSAPI */
+/** 启动浏览器录音引擎（getUserMedia+MediaRecorder）：成功返回 true */
+async function tryStartWavRecorder() {
+  if (!WavRecorder.supported()) return false
+  try {
+    await stopWebSpeechQuietly()
+    wavRecorder = new WavRecorder()
+    await wavRecorder.start()
+    engine.value = 'cloud'
+    settlePending()
+    return true
+  } catch (err) {
+    console.warn('[voice] 浏览器录音失败，尝试钉钉JSAPI:', err?.message)
+    wavRecorder = null
+    return false
+  }
+}
+
+/** 启动钉钉JSAPI原生录音：成功返回 true（达60秒上限自动结束，视同松开直接转写） */
+async function tryStartDdRecorder() {
+  if (!DdAudioRecorder.supported()) return false
+  try {
+    await stopWebSpeechQuietly()
+    ddRecorder = new DdAudioRecorder()
+    ddRecorder.onAutoEnd = () => {
+      if (engine.value === 'dd' && ddRecorder) {
+        const rec = ddRecorder
+        ddRecorder = null
+        recognizing.value = false
+        finishDd(rec)
+      }
+    }
+    await ddRecorder.start()
+    engine.value = 'dd'
+    settlePending()
+    return true
+  } catch (err) {
+    console.warn('[voice] 钉钉JSAPI录音失败:', err?.message)
+    ddRecorder = null
+    return false
+  }
+}
+
+/** 切换云端录音引擎（按住期间无缝切换）
+ *  钉钉容器内原生JSAPI优先：麦克风授权走钉钉App的系统级权限，一次允许永久生效；
+ *  浏览器 getUserMedia/webview 授权不跨会话保留，每次打开应用都会重新弹窗 */
 async function switchToCloud() {
   switchingCloud = true
   try {
-    // 引擎2：浏览器录音（getUserMedia+MediaRecorder）
-    if (WavRecorder.supported()) {
-      try {
-        await stopWebSpeechQuietly()
-        wavRecorder = new WavRecorder()
-        await wavRecorder.start()
-        engine.value = 'cloud'
-        settlePending()
-        return
-      } catch (err) {
-        console.warn('[voice] 浏览器录音失败，尝试钉钉JSAPI:', err?.message)
-      }
-    }
-    // 引擎3：钉钉 JSAPI 录音（webview 无浏览器录音 API 的设备）
-    if (DdAudioRecorder.supported()) {
-      try {
-        await stopWebSpeechQuietly()
-        ddRecorder = new DdAudioRecorder()
-        // 达60秒上限钉钉自动结束：视同松开，直接转写填入
-        ddRecorder.onAutoEnd = () => {
-          if (engine.value === 'dd' && ddRecorder) {
-            const rec = ddRecorder
-            ddRecorder = null
-            recognizing.value = false
-            finishDd(rec)
-          }
-        }
-        await ddRecorder.start()
-        engine.value = 'dd'
-        settlePending()
-        return
-      } catch (err) {
-        console.warn('[voice] 钉钉JSAPI录音失败:', err?.message)
-        ddRecorder = null
-        recognizing.value = false
-        cancelPendingStop()
-        showToast(err?.message || '录音启动失败，请重试')
-        return
-      }
+    if (isDingTalkEnv()) {
+      if (await tryStartDdRecorder()) return
+      if (await tryStartWavRecorder()) return
+    } else {
+      if (await tryStartWavRecorder()) return
+      if (await tryStartDdRecorder()) return
     }
     recognizing.value = false
     cancelPendingStop()
@@ -396,35 +413,99 @@ const parsing = ref(false)
 const confirmForm = ref({ content: '', progress: '未开始', hours: null })
 const confirmMeta = ref({ taskDate: '', tags: [] })
 
-/* 模块：log=工作日志（默认，入工作日志表） plan=计划（入任务表，需选负责人/节点/分类） */
+/** 领导角色：项目配置命中（GET /projects 附带 isLeader），管理员同样可下达指令 */
+const canDirective = computed(() => {
+  const p = projectStore.projects.find((x) => x.id === projectStore.projectId)
+  return Boolean(p?.isLeader) || userStore.isAdmin
+})
+/** 严格意义的领导（非管理员兜底）：进确认卡默认停在「下达指令」 */
+const isLeaderNow = computed(() => {
+  const p = projectStore.projects.find((x) => x.id === projectStore.projectId)
+  return Boolean(p?.isLeader)
+})
+
+/* 模块：log=工作日志（入工作日志表） plan=计划（入任务表） directive=领导下达指令（入领导指令表+自动建任务） */
 const mode = ref('log')
 const planForm = ref({ title: '', ownerName: '', planDate: '', category: '' })
 const planMembers = ref([])
 const planCategories = ref([])
-const planParsed = ref(false) // 本内容是否已AI解析过（切模式只解析一次）
 const planParsing = ref(false)
 const showOwnerPicker = ref(false)
 const showCategoryPicker = ref(false)
 const showDatePopup = ref(false)
 
-/** 拆解并打开确认卡（语音/文字统一入口） */
-async function openConfirm() {
+/* 下达指令表单（与领导指令表字段对应；执行进展由负责人日志自动归纳，不由领导下达时填写） */
+const DIR_STATUSES = ['未开始', '进行中', '已完成', '已延期']
+const dirForm = ref({ title: '', owners: [], deadline: '', status: '未开始' })
+const dirMembers = ref([]) // 成员表（负责人多选源；与计划模式共用 plan-options 接口）
+const dirParsing = ref(false)
+const showDirOwnerPicker = ref(false)
+const showDirDatePopup = ref(false)
+const showDirStatusPicker = ref(false)
+
+/** 指令模式初始化：仅拉成员表（负责人多选源；非AI解析，自动加载）
+ *  领导打开确认卡默认落在本模式（不经 switchMode），故 openConfirm 也会调用 */
+async function initDirectiveMode() {
+  if (!dirMembers.value.length && !planMembers.value.length) {
+    try {
+      const opts = await getPlanOptions()
+      dirMembers.value = opts?.members || []
+      planMembers.value = dirMembers.value
+    } catch {
+      /* 读不到成员表：负责人无法选，提交时报错提示 */
+    }
+  } else if (!dirMembers.value.length) {
+    dirMembers.value = planMembers.value
+  }
+}
+
+/** 指令AI解析（点击触发）：口语化指令 → 任务名称/负责人/办结时限/状态，填后人工可改 */
+async function parseDirNow() {
+  const text = content.value.trim() || dirForm.value.title.trim()
+  if (!text) return showToast('请先输入指令内容')
+  if (dirParsing.value) return
+  dirParsing.value = true
+  try {
+    const parsed = await parseDirective(text)
+    dirForm.value = {
+      title: parsed?.title || dirForm.value.title || text.slice(0, 50),
+      owners: Array.isArray(parsed?.owners) ? parsed.owners : [],
+      deadline: parsed?.deadline || '',
+      status: DIR_STATUSES.includes(parsed?.status) ? parsed.status : '未开始',
+    }
+  } catch {
+    // 解析失败不阻断：标题已预填，其余留空让用户手动选
+    showToast('AI解析未成功，请手动补充')
+  } finally {
+    dirParsing.value = false
+  }
+}
+
+/** 拆解并打开确认卡（语音/文字统一入口）；AI解析不在打开时自动跑，由各模式「AI解析」按钮点击触发
+ *  领导默认落在「下达指令」；成员表/任务选项等非AI数据仍自动加载 */
+function openConfirm() {
   const text = content.value.trim()
   if (!text) return showToast('请先输入工作内容')
-  if (parsing.value || submitting.value) return
+  confirmForm.value = { content: text, progress: '未开始', hours: null }
+  confirmMeta.value = { taskDate: today, tags: [] }
+  planForm.value = { title: '', ownerName: '', planDate: '', category: '' }
+  dirForm.value = { title: text, owners: [], deadline: '', status: '未开始' }
+  mode.value = isLeaderNow.value ? 'directive' : 'log'
+  confirmVisible.value = true
+  if (mode.value === 'directive') initDirectiveMode() // 领导默认进指令模式：拉负责人名单（非AI，不阻塞弹窗）
+}
+
+/** 日志AI解析（点击触发）：从原始内容提取完成情况/工时/日期/标签，填后人工可改 */
+async function parseLogNow() {
+  const text = confirmForm.value.content.trim()
+  if (!text) return showToast('请先填写工作内容')
+  if (parsing.value) return
   parsing.value = true
   try {
     const parsed = await parseWork(text)
-    confirmForm.value = {
-      content: text,
-      progress: parsed.progress || '未开始',
-      hours: parsed.hours ?? null,
-    }
-    confirmMeta.value = { taskDate: parsed.taskDate || today, tags: parsed.tags || [] }
-    mode.value = 'log'
-    planParsed.value = false
-    planForm.value = { title: '', ownerName: '', planDate: '', category: '' }
-    confirmVisible.value = true
+    confirmForm.value.progress = parsed.progress || confirmForm.value.progress
+    confirmForm.value.hours = parsed.hours ?? confirmForm.value.hours
+    confirmMeta.value = { taskDate: parsed.taskDate || confirmMeta.value.taskDate, tags: parsed.tags || [] }
   } catch (err) {
     showFailToast(err?.message || '解析失败，请重试')
   } finally {
@@ -432,32 +513,51 @@ async function openConfirm() {
   }
 }
 
-/** 切到计划模式：拉选项 + AI解析预填（同一内容只解析一次，之后用户随便改） */
-async function switchMode(m) {
-  if (mode.value === m) return
-  mode.value = m
-  if (m !== 'plan' || planParsed.value) return
+/** 计划AI解析（点击触发）：原始内容 → 任务标题/负责人/节点日期/分类，填后人工可改 */
+async function parsePlanNow() {
+  const text = content.value.trim() || planForm.value.title.trim()
+  if (!text) return showToast('请先输入计划内容')
+  if (planParsing.value) return
   planParsing.value = true
   try {
-    const [opts, parsed] = await Promise.all([
-      planMembers.value.length ? Promise.resolve(null) : getPlanOptions(),
-      parsePlan(content.value.trim()),
-    ])
-    if (opts?.members?.length) planMembers.value = opts.members
-    if (opts?.categories?.length) planCategories.value = opts.categories
+    if (!planMembers.value.length) {
+      // 解析前确保成员表已拉取（负责人下拉需要；解析出的负责人以成员表名单校验）
+      const opts = await getPlanOptions().catch(() => null)
+      if (opts?.members?.length) planMembers.value = opts.members
+      if (opts?.categories?.length) planCategories.value = opts.categories
+    }
+    const parsed = await parsePlan(text)
     planForm.value = {
-      title: parsed?.title || content.value.trim().slice(0, 20),
+      title: parsed?.title || planForm.value.title || text.slice(0, 20),
       ownerName: parsed?.ownerName || '',
       planDate: parsed?.planDate || '',
       category: parsed?.category || '',
     }
-  } catch (err) {
-    // 解析失败不阻断：留空让用户手动填
-    planForm.value.title = content.value.trim().slice(0, 20)
+  } catch {
+    planForm.value.title = planForm.value.title || text.slice(0, 20)
     showToast('AI解析未成功，请手动补充')
   } finally {
-    planParsed.value = true
     planParsing.value = false
+  }
+}
+
+/** 模式切换：拉取该模式所需选项数据（成员表/任务清单等，均非AI解析）；AI解析统一由各模式按钮点击触发 */
+async function switchMode(m) {
+  if (mode.value === m) return
+  mode.value = m
+  if (m === 'directive') {
+    if (!dirForm.value.title.trim()) dirForm.value.title = content.value.trim().slice(0, 50)
+    initDirectiveMode() // 拉负责人名单
+    return
+  }
+  if (m === 'plan' && !planMembers.value.length) {
+    try {
+      const opts = await getPlanOptions()
+      if (opts?.members?.length) planMembers.value = opts.members
+      if (opts?.categories?.length) planCategories.value = opts.categories
+    } catch {
+      /* 读不到成员表：负责人无法选，提交时报错提示 */
+    }
   }
 }
 
@@ -485,8 +585,51 @@ const onCategoryConfirm = ({ selectedOptions }) => {
   showCategoryPicker.value = false
 }
 
-/** 确认提交：日志→工作日志表；计划→任务表 */
+/** 指令办结时限：van-date-picker值(['年','月','日']) ↔ YYYY-MM-DD */
+const dirDateArr = computed({
+  get: () => {
+    const s = dirForm.value.deadline
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return [s.slice(0, 4), s.slice(5, 7), s.slice(8, 10)]
+    const d = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    return [String(d.getFullYear()), p(d.getMonth() + 1), p(d.getDate())]
+  },
+  set: (arr) => {
+    if (Array.isArray(arr) && arr.length === 3) dirForm.value.deadline = arr.join('-')
+  },
+})
+
+const onDirStatusConfirm = ({ selectedOptions }) => {
+  dirForm.value.status = selectedOptions[0]?.text || '未开始'
+  showDirStatusPicker.value = false
+}
+
+/** 确认提交：日志→工作日志表；计划→任务表；指令→领导指令表+任务表（自动联动） */
 async function confirmSubmit() {
+  if (mode.value === 'directive') {
+    if (!dirForm.value.title.trim()) return showToast('请填写指令任务名称')
+    if (!dirForm.value.owners.length) return showToast('请选择负责人（可多选）')
+    if (!dirForm.value.deadline) return showToast('请选择办结时限')
+    if (submitting.value) return
+    submitting.value = true
+    try {
+      const res = await submitDirective({
+        title: dirForm.value.title.trim(),
+        ownerNames: dirForm.value.owners,
+        deadline: dirForm.value.deadline,
+        status: dirForm.value.status,
+      })
+      confirmVisible.value = false
+      content.value = ''
+      showSuccessToast(res?.__message || '指令已下达，任务表已自动创建关联任务')
+    } catch (err) {
+      showFailToast(err?.message || '下达失败，请重试')
+    } finally {
+      submitting.value = false
+    }
+    return
+  }
+
   if (mode.value === 'plan') {
     if (!planForm.value.title.trim()) return showToast('请填写任务标题')
     if (!planForm.value.ownerName) return showToast('请选择负责人')
@@ -682,15 +825,31 @@ onMounted(async () => {
       <div class="confirm-body">
         <h3 class="confirm-title">AI 已拆解，请确认</h3>
 
-        <!-- 必选模块：日志→工作日志表；计划→任务表 -->
+        <!-- 必选模块：日志→工作日志表；计划→任务表；指令→领导指令表（仅领导可见） -->
         <div class="mode-switch">
           <button class="mode-btn" :class="{ active: mode === 'log' }" @click="switchMode('log')">日志</button>
           <button class="mode-btn" :class="{ active: mode === 'plan' }" @click="switchMode('plan')">计划</button>
+          <button v-if="canDirective" class="mode-btn" :class="{ active: mode === 'directive' }" @click="switchMode('directive')">
+            下达指令
+          </button>
         </div>
 
         <!-- 日志模式 -->
         <template v-if="mode === 'log'">
-          <div class="field-label">工作内容（可修改补充）</div>
+          <div class="field-label">
+            工作内容（可修改补充）
+            <van-button
+              size="mini"
+              plain
+              round
+              type="primary"
+              :loading="parsing"
+              :disabled="!confirmForm.content.trim()"
+              @click="parseLogNow"
+            >
+              AI解析
+            </van-button>
+          </div>
           <van-field
             v-model="confirmForm.content"
             type="textarea"
@@ -748,10 +907,20 @@ onMounted(async () => {
         </template>
 
         <!-- 计划模式 -->
-        <template v-else>
+        <template v-else-if="mode === 'plan'">
           <div class="field-label">
             任务标题（可修改补充）
-            <van-tag v-if="planParsing" plain type="primary" size="mini">AI解析中…</van-tag>
+            <van-button
+              size="mini"
+              plain
+              round
+              type="primary"
+              :loading="planParsing"
+              :disabled="!(content.trim() || planForm.title.trim())"
+              @click="parsePlanNow"
+            >
+              AI解析
+            </van-button>
           </div>
           <van-field
             v-model="planForm.title"
@@ -788,10 +957,59 @@ onMounted(async () => {
           </div>
         </template>
 
+        <!-- 下达指令模式（领导）：字段与领导指令表对应；AI解析点击触发，人工可编辑 -->
+        <template v-else>
+          <div class="field-label">
+            指令任务名称（必填）
+            <van-button
+              size="mini"
+              plain
+              round
+              type="primary"
+              :loading="dirParsing"
+              :disabled="!(content.trim() || dirForm.title.trim())"
+              @click="parseDirNow"
+            >
+              AI解析
+            </van-button>
+          </div>
+          <van-field
+            v-model="dirForm.title"
+            type="textarea"
+            rows="2"
+            autosize
+            maxlength="50"
+            class="confirm-input"
+            placeholder="填写领导交办的任务名称"
+          />
+
+          <div class="field-label">负责人（必选，支持多选）</div>
+          <div class="plan-cell" @click="showDirOwnerPicker = true">
+            <span :class="{ placeholder: !dirForm.owners.length }">
+              {{ dirForm.owners.length ? dirForm.owners.join('、') : '点击选择负责人（可多选）' }}
+            </span>
+            <van-icon name="arrow" />
+          </div>
+
+          <div class="field-label">办结时限（必填）</div>
+          <div class="plan-cell" @click="showDirDatePopup = true">
+            <span :class="{ placeholder: !dirForm.deadline }">
+              {{ dirForm.deadline || '点击选择办结时限日期' }}
+            </span>
+            <van-icon name="arrow" />
+          </div>
+
+          <div class="field-label">状态</div>
+          <div class="plan-cell" @click="showDirStatusPicker = true">
+            <span>{{ dirForm.status }}</span>
+            <van-icon name="arrow" />
+          </div>
+        </template>
+
         <div class="confirm-actions safe-bottom">
           <van-button block round plain @click="confirmVisible = false">取消</van-button>
           <van-button block round type="primary" :loading="submitting" @click="confirmSubmit">
-            {{ mode === 'plan' ? '提交到任务表' : '确认提交' }}
+            {{ mode === 'plan' ? '提交到任务表' : mode === 'directive' ? '下达指令' : '确认提交' }}
           </van-button>
         </div>
       </div>
@@ -836,6 +1054,56 @@ onMounted(async () => {
         :max-date="new Date(Date.now() + 365 * 86400000)"
         @confirm="showDatePopup = false"
         @cancel="showDatePopup = false"
+      />
+    </van-popup>
+
+    <!-- 指令：负责人多选（成员表） -->
+    <van-popup v-model:show="showDirOwnerPicker" position="bottom" round :style="{ maxHeight: '70vh' }">
+      <div class="owner-multi">
+        <p class="owner-multi-title">选择负责人（可多选）</p>
+        <van-checkbox-group v-model="dirForm.owners" class="owner-multi-list">
+          <van-cell-group inset>
+            <van-cell
+              v-for="m in dirMembers"
+              :key="m.name"
+              :title="m.name"
+              :label="m.roles?.length ? m.roles.join('、') : ''"
+              clickable
+              @click="dirForm.owners = dirForm.owners.includes(m.name) ? dirForm.owners.filter((x) => x !== m.name) : [...dirForm.owners, m.name]"
+            >
+              <template #right-icon>
+                <van-checkbox :name="m.name" @click.stop />
+              </template>
+            </van-cell>
+          </van-cell-group>
+        </van-checkbox-group>
+        <div class="owner-multi-actions">
+          <van-button block round type="primary" @click="showDirOwnerPicker = false">
+            确定{{ dirForm.owners.length ? `（已选${dirForm.owners.length}人）` : '' }}
+          </van-button>
+        </div>
+      </div>
+    </van-popup>
+
+    <!-- 指令：办结时限日期 -->
+    <van-popup v-model:show="showDirDatePopup" position="bottom" round>
+      <van-date-picker
+        title="选择办结时限"
+        v-model="dirDateArr"
+        :min-date="new Date(Date.now() - 86400000)"
+        :max-date="new Date(Date.now() + 365 * 86400000)"
+        @confirm="showDirDatePopup = false"
+        @cancel="showDirDatePopup = false"
+      />
+    </van-popup>
+
+    <!-- 指令：状态下拉 -->
+    <van-popup v-model:show="showDirStatusPicker" position="bottom" round>
+      <van-picker
+        title="选择状态"
+        :columns="DIR_STATUSES.map((s) => ({ text: s, value: s }))"
+        @confirm="onDirStatusConfirm"
+        @cancel="showDirStatusPicker = false"
       />
     </van-popup>
   </div>
@@ -1113,6 +1381,10 @@ onMounted(async () => {
 }
 
 .field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-main);
@@ -1141,6 +1413,26 @@ onMounted(async () => {
   background: #ecf5ff;
   color: #1677ff;
   font-weight: 600;
+}
+
+/* 指令：负责人多选弹层 */
+.owner-multi {
+  padding: 16px 0 calc(12px + env(safe-area-inset-bottom));
+}
+
+.owner-multi-title {
+  margin: 0 16px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.owner-multi-list {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.owner-multi-actions {
+  padding: 12px 16px 0;
 }
 
 /* 计划模式：选择单元格（负责人/节点/分类） */

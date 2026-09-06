@@ -14,8 +14,12 @@ import { fail } from '../utils/respond.js'
 const TTL_MS = 5 * 60 * 1000
 const cache = new Map() // `${userId}|${projectId}` -> { verdict, ts }
 
-/** 判定结果：yes成员 / no非成员 / unknown无法判定（兜底放行）/ invalid项目不存在 */
+/** 判定结果：yes成员 / no非成员 / pending待审核 / unknown无法判定（兜底放行）/ invalid项目不存在 */
 async function verdictOf(user, pid) {
+  // 待审核项目实时判定、不进缓存（审批通过后立即恢复访问）
+  const p0 = listProjects().find((x) => x.id === pid)
+  if (p0?.status === 'pending') return 'pending'
+
   const key = `${user.userId}|${pid}`
   const hit = cache.get(key)
   if (hit && Date.now() - hit.ts < TTL_MS) return hit.verdict
@@ -43,10 +47,12 @@ export async function projectGuard(req, res, next) {
     const pid = req.user?.projectId
     if (req.user.isAdmin || !config.dingtalkEnabled) return next()
     if (!pid) {
+      console.warn(`[guard] 缺项目ID被拒: user=${req.user.userId}(${req.user.name}) ${req.method} ${req.originalUrl}`)
       return fail(res, '请先选择项目；如无可用项目，请联系管理员将你加入项目成员表', 400)
     }
     const verdict = await verdictOf(req.user, pid)
     if (verdict === 'invalid') return fail(res, '项目不存在或已删除', 404)
+    if (verdict === 'pending') return fail(res, '项目待管理员审核，审核通过后即可使用', 403)
     if (verdict !== 'no') return next()
     console.warn(`[guard] 越权拦截: user=${req.user.userId}(${req.user.name}) project=${pid}`)
     fail(res, '你不在该项目成员表中，无权访问该项目数据', 403)

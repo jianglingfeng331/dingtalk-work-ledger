@@ -90,6 +90,8 @@ export function ensureJsapiReady() {
 export class DdAudioRecorder {
   constructor() {
     this.localId = ''
+    this.mediaId = ''
+    this.startedAt = 0 // startRecord 成功时刻（过短录音的停止会因原生未生成 mediaId 报错）
     this.onAutoEnd = null // 录音达60秒上限被钉钉自动结束时的回调（外层用于补转写）
   }
 
@@ -104,7 +106,8 @@ export class DdAudioRecorder {
     dd.device.audio.onRecordEnd({
       onSuccess: (res) => {
         if (this.localId) return // 已被正常 stopRecord 结束
-        this.localId = res?.mediaId || res?.localId || ''
+        this.mediaId = String(res?.mediaId || '')
+        this.localId = String(res?.localId || '') || this.mediaId
         this.onAutoEnd?.()
       },
       onFail: () => {},
@@ -116,30 +119,57 @@ export class DdAudioRecorder {
         onFail: (err) => reject(new Error(err?.errorMessage || err?.message || '启动录音失败')),
       })
     })
+    this.startedAt = Date.now()
   }
 
   /** 结束录音并转写，返回文本（过短返回 null）；已被自动结束时直接转写 */
   async stopTranscribe() {
     const dd = await ensureJsapiReady()
+    // 录音时长过短（如启动竞态瞬间松开）：原生尚未生成媒体数据，此时 stopRecord 会报
+    // "The parameter 'mediaId' must not be null"，静默丢弃并按"说话太短"提示
+    if (!this.localId && this.startedAt && Date.now() - this.startedAt < 800) {
+      try {
+        dd.device.audio.stopRecord({ onSuccess: () => {}, onFail: () => {} })
+      } catch {
+        /* 忽略清理失败 */
+      }
+      throw new Error('说话时间太短，请重试')
+    }
     if (!this.localId) {
-      this.localId = await new Promise((resolve, reject) => {
+      const res = await new Promise((resolve, reject) => {
         dd.device.audio.stopRecord({
-          onSuccess: (res) => resolve(res?.mediaId || res?.localId || ''),
-          onFail: (err) => reject(new Error(err?.errorMessage || err?.message || '结束录音失败')),
+          onSuccess: resolve,
+          onFail: (err) => {
+            const msg = String(err?.errorMessage || err?.message || '')
+            reject(new Error(/mediaId/i.test(msg) ? '说话时间太短，请重试' : msg || '结束录音失败'))
+          },
         })
       })
+      // 不同版本钉钉返回 localId（本地会话标识）或 mediaId（服务端媒体ID）之一或皆有，都记下
+      this.localId = String(res?.localId || '')
+      this.mediaId = String(res?.mediaId || '')
+      this.localId = this.localId || this.mediaId
     }
-    if (!this.localId) throw new Error('录音数据为空，请重试')
-    const { translateText } = await new Promise((resolve, reject) => {
+    if (!this.localId) throw new Error('说话时间太短，请重试')
+    const res = await new Promise((resolve, reject) => {
+      // 新旧版本钉钉对转写接口的入参名不一致（老版读 localId、新版读 mediaId），两个都传以确保命中
       dd.device.audio.translateVoice({
         localId: this.localId,
+        mediaId: this.mediaId || this.localId,
         isShowProgressTips: 0,
         onSuccess: resolve,
-        onFail: (err) => reject(new Error(err?.errorMessage || err?.message || '语音转写失败，请重试')),
+        onFail: (err) => {
+          const msg = String(err?.errorMessage || err?.message || '')
+          console.error('[voice] translateVoice失败:', msg, { localId: this.localId, mediaId: this.mediaId })
+          reject(new Error(/mediaId|localId/i.test(msg) ? `录音标识失效(${msg.slice(0, 40)})，请重试` : msg || '语音转写失败，请重试'))
+        },
       })
     })
-    const text = String(translateText || '').trim()
-    return text || null
+    // 不同版本钉钉返回的文本字段名不一致（新版为 content），多字段兼容读取；为空时把实际字段名暴露出来便于定位
+    const text = String(res?.content ?? res?.translateText ?? res?.text ?? res?.result ?? res?.translateResult ?? '').trim()
+    console.log('[voice] translateVoice返回字段:', Object.keys(res || {}).join(','), '文本长度:', text.length)
+    if (!text) throw new Error(`语音转写为空(${Object.keys(res || {}).join('/') || '空响应'})，请重试`)
+    return text
   }
 
   /** 异常时静默释放（已结束的录音无需清理） */

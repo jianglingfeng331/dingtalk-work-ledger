@@ -8,7 +8,10 @@ import { config } from '../config.js'
  * 未配置过时自动以环境变量播种（QWEN_API_KEY / DINGTALK_TABLE_* / ADMIN_USERIDS）
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-export const DATA_DIR = path.resolve(__dirname, '../../data')
+// 测试可通过 WORK_SERVER_DATA_DIR 指向临时目录，避免污染真实配置
+export const DATA_DIR = process.env.WORK_SERVER_DATA_DIR
+  ? path.resolve(process.env.WORK_SERVER_DATA_DIR)
+  : path.resolve(__dirname, '../../data')
 const FILE = path.join(DATA_DIR, 'settings.json')
 
 const DEFAULTS = {
@@ -42,6 +45,9 @@ const DEFAULTS = {
   },
   // 语音识别配置（全局共性）：讯飞语音听写 WebAPI（传统引擎，免费额度每日500次）
   asr: { appId: '', apiKey: '', apiSecret: '' },
+  // 桌面版（秒建功）登录令牌：管理员在设置页生成，桌面端凭此令牌换取正式会话
+  // identity 绑定生成者（管理员）的 userId/name/unionId，登录后即以该身份工作
+  desktop: { token: '', userId: '', name: '', unionId: '', createdAt: 0 },
 }
 
 /** 旧单表配置 → projects[0] 一次性迁移（已有 projects 则跳过） */
@@ -57,6 +63,7 @@ function migrateTableToProjects(s) {
       taskTitleCol: s.table.taskTitleCol || '任务名称',
       linkCol: s.table.linkCol || '关联任务',
       memberSheetName: '项目成员表',
+      directiveSheetName: '领导指令表',
       operatorUnionId: s.table.operatorUnionId || '',
       createdAt: Date.now(),
     },
@@ -167,9 +174,29 @@ export function getTable(projectId) {
     taskTitleCol: p.taskTitleCol || '任务名称',
     linkCol: p.linkCol || '关联任务',
     memberSheetName: p.memberSheetName || '项目成员表',
+    directiveSheetName: p.directiveSheetName || '领导指令表',
     sheetId: p.sheetId || '工作日志表',
     enabled: config.dingtalkEnabled && Boolean(p.baseId && (p.sheetId || '工作日志表')),
   }
+}
+
+/** 按 ID 取项目原始配置（不存在返回 null） */
+export function getProject(projectId) {
+  const p = (state.projects || []).find((x) => x.id === projectId)
+  return p ? structuredClone(p) : null
+}
+
+/**
+ * 领导角色判定：项目 leaders 配置命中即真（unionId 优先精确匹配，userId 兜底）
+ * user 为 H5/会话用户对象（含 userId / unionId）；管理员不自动视为领导（两个独立权限维度）
+ */
+export function isLeader(user, projectId) {
+  if (!user) return false
+  const p = (state.projects || []).find((x) => x.id === (projectId || ''))
+  const leaders = Array.isArray(p?.leaders) ? p.leaders : []
+  const uid = user.unionId || ''
+  const userId = user.userId || ''
+  return leaders.some((l) => (uid && l?.unionId === uid) || (userId && l?.userId === userId))
 }
 
 /* ===================== 项目管理（管理员） ===================== */
@@ -178,7 +205,25 @@ export function listProjects() {
   return structuredClone(state.projects || [])
 }
 
-/** 新建/更新项目：带 id 更新，无 id 新建；AI表格链接自动解析 baseId */
+/** 文本归一：小写、去空白与常见中英文标点（项目名/别名匹配用，容忍口语叫法差异） */
+const normText = (s) => String(s || '').toLowerCase().replace(/[\s·．.。,，、;；:：!！?？\-—_/\\()（）【】\[\]]/g, '')
+
+/**
+ * 从自然语言文本中识别项目：包含项目名或任一别名即命中（城投ai项目/ai协同项目→城投AI协同）
+ * 供 MCP skill 问题路由与 ?projectId= 别名参数使用；未命中返回 null
+ */
+export function matchProjectByText(text) {
+  const t = normText(text)
+  if (!t) return null
+  for (const p of state.projects || []) {
+    const names = [p.name, ...(Array.isArray(p.aliases) ? p.aliases : [])]
+    if (names.some((n) => normText(n) && t.includes(normText(n)))) return structuredClone(p)
+  }
+  return null
+}
+
+/** 新建/更新项目：带 id 更新，无 id 新建；AI表格链接自动解析 baseId
+ *  待审核项目（status='pending' 且走自动建表）允许暂无 baseId，审批通过时由路由补建 */
 export function saveProject(input) {
   const p = { ...input }
   // 支持直接粘贴钉钉文档链接：alidocs.dingtalk.com/i/nodes/{baseId}... 自动提取
@@ -191,7 +236,7 @@ export function saveProject(input) {
     ps[idx] = { ...ps[idx], ...p }
   } else {
     if (!p.name?.trim()) throw new Error('项目名称不能为空')
-    if (!p.baseId?.trim()) throw new Error('请填写AI表格链接或Base ID')
+    if (!p.baseId?.trim() && p.status !== 'pending') throw new Error('请填写AI表格链接或Base ID')
     p.id = `p_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
     p.createdAt = Date.now()
     ps.push(p)

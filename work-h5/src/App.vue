@@ -1,6 +1,16 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
+import { useRoute } from 'vue-router'
 import { initUser } from './utils/user'
+import AiAssistant from './components/AiAssistant.vue'
+
+const route = useRoute()
+// 桌面端页面（/quick 快速填写、/settings-web 网页设置、/desktop-pair 扫码授权）不显示移动端底部导航
+const isDesktopPage = computed(() => ['quick', 'settingsWeb', 'desktopPair'].includes(route.name))
+// AI 悬浮卡通人物仅 /quick、/settings-web 展示（扫码授权页不出现角色形象）
+const showAssistant = computed(() => ['quick', 'settingsWeb'].includes(route.name))
+// body 打标：桌面页下 Toast/Dialog 等渲染到 body 的 vant 组件用固定 px（覆盖样式在 index.html）
+watchEffect(() => document.body.classList.toggle('quick-desktop', isDesktopPage.value))
 
 // 键盘弹起检测：可视高度较初始值骤降120px以上视为键盘弹出
 // （钉钉安卓webview会压缩页面把fixed的tabbar顶到键盘上方，故弹起时暂隐导航，收起恢复）
@@ -36,7 +46,7 @@ onBeforeUnmount(() => {
       </keep-alive>
     </router-view>
 
-    <van-tabbar v-show="!kbOpen" route safe-area-inset-bottom class="app-tabbar">
+    <van-tabbar v-show="!kbOpen && !isDesktopPage" route safe-area-inset-bottom class="app-tabbar">
       <van-tabbar-item replace to="/">
         <span>工作记录</span>
         <template #icon>
@@ -62,6 +72,9 @@ onBeforeUnmount(() => {
         </template>
       </van-tabbar-item>
     </van-tabbar>
+
+    <!-- web 桌面页：右下角 AI 助手悬浮人物（仅 /quick、/settings-web，扫码授权页不显示） -->
+    <AiAssistant v-if="showAssistant" />
   </div>
 </template>
 

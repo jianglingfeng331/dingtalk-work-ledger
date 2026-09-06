@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
 import { aiQuery, getSettings, runtime } from '../api'
 import { initUser } from '../utils/user'
 import avatarImg from '../assets/ai-avatar.png'
@@ -19,20 +19,34 @@ const suggestions = ref(['本周我完成了哪些任务？', '我有哪些未�
 
 const onlyWelcome = () => messages.value.length === 1
 
-/** 发起 AI 查询：后端 MCP 拉取台账实时数据 + 智谱 LLM 推理（正式链路，失败明确提示） */
+/** 发起 AI 查询：流式逐字显示（首字约1秒内出现）；后端 MCP 拉台账实时数据 + 智谱 LLM 推理 */
 async function send(q) {
   const question = (q ?? input.value).trim()
   if (!question || sending.value) return
   input.value = ''
   messages.value.push({ role: 'user', text: question })
-  const aiMsg = { role: 'ai', text: '', loading: true }
+  // 必须用 reactive 包装：直接 mutate push 进数组的原始对象不会触发 Vue 渲染
+  const aiMsg = reactive({ role: 'ai', text: '', loading: true })
   messages.value.push(aiMsg)
   sending.value = true
   scrollToBottom()
+  // 兜底清除 LLM 偶发输出的 Markdown 星号/井号（与后端最终清洗一致）
+  const clean = (s) => s.replace(/\*\*?/g, '').replace(/^#{1,6}\s*/gm, '')
   try {
-    aiMsg.text = await aiQuery(question)
+    const answer = await aiQuery(question, {
+      onToken: (_delta, full) => {
+        aiMsg.loading = false
+        aiMsg.text = clean(full)
+        scrollToBottom()
+      },
+    })
+    aiMsg.text = clean(answer || aiMsg.text)
+    if (!aiMsg.text.trim()) {
+      aiMsg.text = 'AI 没有返回内容，请稍后重试'
+    }
   } catch (err) {
-    aiMsg.text = '查询失败：' + (err?.message || '请稍后重试')
+    const tip = '查询失败：' + (err?.message || '请稍后重试')
+    aiMsg.text = aiMsg.text ? `${aiMsg.text}\n\n${tip}` : tip
   } finally {
     aiMsg.loading = false
     sending.value = false

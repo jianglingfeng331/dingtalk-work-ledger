@@ -1,5 +1,5 @@
 import { listRecords } from './store.js'
-import { listMembers, listTasks } from './dingtalk-table.js'
+import { listDirectives, listMembers, listTasks } from './dingtalk-table.js'
 
 /**
  * MCP（Model Context Protocol）工具层
@@ -66,6 +66,19 @@ const tools = [
     description: '查询项目成员表：成员姓名与角色',
     inputSchema: { type: 'object', properties: {} },
     handler: ({ user }) => listMembers(user.unionId, user.projectId),
+  },
+  {
+    // 领导指令表实时拉取（钉钉AI表格）；失败由调用方容错，不阻断AI查询
+    name: 'get_directives',
+    description: '查询领导指令表：领导下达的任务指令，含负责人、办结时限、状态、执行进展',
+    inputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string', enum: ['未开始', '进行中', '已完成', '已延期'], description: '按状态过滤（可选）' } },
+    },
+    handler: async ({ user, status = '' }) => {
+      const directives = await listDirectives(user.unionId, user.projectId)
+      return status ? directives.filter((d) => d.status === status) : directives
+    },
   },
 ]
 

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src *" />
+  <title>秒建功</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+    /* ============ 桌宠角色（窗口右下角锚定） ============ */
+    #pet {
+      position: fixed;
+      right: 0;
+      bottom: 0;
+      width: 132px;
+      height: 148px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      cursor: pointer;
+      z-index: 10;
+    }
+    #pet img {
+      width: 108px;
+      height: 108px;
+      object-fit: contain;
+      filter: drop-shadow(0 10px 14px rgba(23, 43, 77, 0.28));
+      animation: breathe 3.2s ease-in-out infinite;
+      transition: transform 0.2s;
+    }
+    #pet:hover img { transform: scale(1.06); }
+    #pet.dragging img { animation: none; transform: scale(1.02) rotate(-3deg); }
+    @keyframes breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+    #pet .pet-name {
+      margin: 4px 0 2px;
+      font-size: 11px;
+      color: #345;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 2px 10px;
+      border-radius: 99px;
+      box-shadow: 0 1px 4px rgba(23, 43, 77, 0.14);
+    }
+    /* 引导气泡 */
+    #bubble {
+      position: fixed;
+      right: 128px;
+      bottom: 88px;
+      background: #fff;
+      color: #24425f;
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(23, 43, 77, 0.16);
+      max-width: 180px;
+      display: none;
+      z-index: 9;
+      animation: pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    #bubble.show { display: block; }
+    #bubble::after {
+      content: '';
+      position: absolute;
+      right: -5px;
+      bottom: 14px;
+      width: 10px;
+      height: 10px;
+      background: #fff;
+      transform: rotate(45deg);
+    }
+    @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.9); } to { opacity: 1; transform: none; } }
+
+    /* ============ 聊天面板 ============ */
+    #panel {
+      position: fixed;
+      left: 8px;
+      top: 8px;
+      width: 380px;
+      height: 544px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(14px) saturate(160%);
+      border-radius: 16px;
+      box-shadow: 0 2px 6px rgba(23, 43, 77, 0.06), 0 18px 44px -16px rgba(23, 43, 77, 0.3);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 20;
+      animation: pop 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    #panel.open { display: flex; }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(23, 43, 77, 0.07);
+    }
+    .panel-head img { width: 30px; height: 30px; border-radius: 8px; }
+    .who { flex: 1; min-width: 0; }
+    .who b { font-size: 13px; color: #1c2b3a; display: block; }
+    .who span { font-size: 11px; color: #7a8ba1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .icon-btn {
+      border: none; background: transparent; cursor: pointer; font-size: 13px; color: #7a8ba1;
+      width: 26px; height: 26px; border-radius: 7px;
+    }
+    .icon-btn:hover { background: rgba(22, 119, 255, 0.08); color: #1677ff; }
+
+    .mode-tabs { display: flex; gap: 4px; padding: 8px 10px 0; }
+    .mode-tab {
+      flex: 1; border: none; cursor: pointer; padding: 6px 0; font-size: 12px; color: #66788e;
+      background: #eef1f5; border-radius: 9px; transition: all 0.15s;
+    }
+    .mode-tab.active { background: #fff; color: #1677ff; font-weight: 600; box-shadow: 0 1px 3px rgba(23, 43, 77, 0.12); }
+
+    /* 消息区 */
+    #msgs { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    #msgs::-webkit-scrollbar { width: 4px; }
+    #msgs::-webkit-scrollbar-thumb { background: rgba(23, 43, 77, 0.16); border-radius: 2px; }
+    .msg { max-width: 84%; padding: 7px 10px; border-radius: 11px; font-size: 12.5px; line-height: 1.55; user-select: text; white-space: pre-wrap; word-break: break-word; }
+    .msg.ai { align-self: flex-start; background: #f2f5f9; color: #22324a; border-top-left-radius: 4px; }
+    .msg.me { align-self: flex-end; background: #1677ff; color: #fff; border-top-right-radius: 4px; }
+    .msg.err { align-self: flex-start; background: #fff2f0; color: #cf1322; }
+    .msg .typing::dot { display: inline-block; }
+    .quick-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
+    .quick-chip {
+      border: 1px solid rgba(22, 119, 255, 0.35); background: rgba(22, 119, 255, 0.05); color: #1677ff;
+      font-size: 11px; padding: 3px 9px; border-radius: 99px; cursor: pointer;
+    }
+    .quick-chip:hover { background: rgba(22, 119, 255, 0.12); }
+    .status-hint { align-self: flex-start; font-size: 10.5px; color: #98a2b3; padding: 0 2px; }
+
+    /* 输入区 */
+    .input-row { display: flex; gap: 8px; padding: 10px 12px 12px; }
+    .input-row textarea {
+      flex: 1; resize: none; border: 1px solid #dde4ec; border-radius: 10px; padding: 7px 10px;
+      font-size: 12.5px; font-family: inherit; height: 38px; line-height: 1.5; outline: none; background: #fff;
+    }
+    .input-row textarea:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.14); }
+    .send-btn {
+      border: none; cursor: pointer; background: #1677ff; color: #fff; font-size: 12.5px; font-weight: 600;
+      padding: 0 14px; border-radius: 10px; box-shadow: 0 2px 8px rgba(22, 119, 255, 0.3);
+    }
+    .send-btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .send-btn:active:not(:disabled) { transform: scale(0.97); }
+    .send-btn:disabled { background: #a8c8f5; box-shadow: none; cursor: default; }
+
+    /* ============ 填报模式 ============ */
+    #fill { display: none; flex: 1; flex-direction: column; padding: 10px 12px 12px; overflow-y: auto; gap: 8px; }
+    #fill.show { display: flex; }
+    .fill-ta {
+      resize: none; border: 1px solid #dde4ec; border-radius: 10px; padding: 8px 10px; font-size: 12.5px;
+      font-family: inherit; height: 88px; line-height: 1.55; outline: none;
+    }
+    .fill-ta:focus { border-color: #1677ff; box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.14); }
+    .field-row { display: flex; gap: 8px; }
+    .field { flex: 1; }
+    .field label { display: block; font-size: 11px; color: #7a8ba1; margin-bottom: 3px; }
+    .field input, .field select {
+      width: 100%; height: 32px; border: 1px solid #dde4ec; border-radius: 8px; padding: 0 8px;
+      font-size: 12.5px; outline: none; background: #fff; font-family: inherit;
+    }
+    .field input:focus, .field select:focus { border-color: #1677ff; }
+    .fill-submit {
+      border: none; cursor: pointer; background: #0aa56d; color: #fff; font-size: 13px; font-weight: 600;
+      padding: 9px 0; border-radius: 10px; box-shadow: 0 2px 8px rgba(10, 165, 109, 0.3);
+    }
+    .fill-submit:hover { transform: translateY(-1px); }
+    .fill-submit:active { transform: scale(0.98); }
+    .fill-submit:disabled { background: #a5d9c3; box-shadow: none; cursor: default; }
+    .fill-tip { font-size: 11px; color: #98a2b3; line-height: 1.6; }
+    .parse-card {
+      border: 1px solid #d8ecd2; background: #f4fbf7; border-radius: 10px; padding: 8px 10px; font-size: 12px; color: #22553f;
+      line-height: 1.6; display: none;
+    }
+    .parse-card.show { display: block; }
+    .ok-card {
+      text-align: center; padding: 20px 10px; color: #0aa56d; font-size: 13px; display: none; animation: pop 0.3s;
+    }
+    .ok-card.show { display: block; }
+    .ok-card b { font-size: 30px; display: block; margin-bottom: 6px; }
+
+    /* ============ 设置浮层 ============ */
+    #settings {
+      position: fixed; inset: 0; background: rgba(16, 28, 45, 0.45); display: none;
+      align-items: center; justify-content: center; z-index: 30;
+    }
+    #settings.open { display: flex; }
+    .set-card {
+      width: 330px; background: #fff; border-radius: 14px; padding: 18px;
+      box-shadow: 0 20px 60px rgba(16, 28, 45, 0.35); animation: pop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .set-card h3 { font-size: 14px; color: #1c2b3a; margin-bottom: 4px; }
+    .set-card .sub { font-size: 11px; color: #98a2b3; margin-bottom: 12px; line-height: 1.5; }
+    .set-card .field { margin-bottom: 10px; }
+    .set-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .set-actions button { flex: 1; border: none; cursor: pointer; font-size: 12.5px; padding: 8px 0; border-radius: 9px; }
+    .btn-primary { background: #1677ff; color: #fff; font-weight: 600; }
+    .btn-plain { background: #eef1f5; color: #4a5b70; }
+
+    /* 轻提示 */
+    #toast {
+      position: fixed; left: 50%; top: 16px; transform: translateX(-50%);
+      background: rgba(28, 43, 58, 0.92); color: #fff; font-size: 12px; padding: 7px 14px;
+      border-radius: 99px; display: none; z-index: 40; animation: pop 0.25s;
+    }
+    #toast.show { display: block; }
+  </style>
+</head>
+<body>
+  <!-- 聊天/填报面板 -->
+  <div id="panel">
+    <div class="panel-head">
+      <img src="../assets/ai-assistant.png" alt="" />
+      <div class="who">
+        <b>AI 助手 · 老谢</b>
+        <span id="head-project">项目加载中…</span>
+      </div>
+      <button class="icon-btn" id="btn-settings" title="设置">⚙</button>
+      <button class="icon-btn" id="btn-close" title="收起">✕</button>
+    </div>
+
+    <!-- 查询模式 -->
+    <div id="chat">
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="chat">💬 AI 查询</button>
+        <button class="mode-tab" data-mode="fill">✏️ 填报日志</button>
+      </div>
+      <div id="msgs"></div>
+      <div class="input-row">
+        <textarea id="q-input" placeholder="问点什么…（Enter 发送）"></textarea>
+        <button class="send-btn" id="q-send">发送</button>
+      </div>
+    </div>
+
+    <!-- 填报模式 -->
+    <div id="fill">
+      <div class="mode-tabs" style="padding: 0 0 4px;">
+        <button class="mode-tab" data-mode="chat">💬 AI 查询</button>
+        <button class="mode-tab active" data-mode="fill">✏️ 填报日志</button>
+      </div>
+      <textarea class="fill-ta" id="f-content" placeholder="用大白话描述，如：完成了智慧会议系统部署，花了3小时"></textarea>
+      <div class="parse-card" id="parse-card"></div>
+      <div class="field-row">
+        <div class="field">
+          <label>完成情况</label>
+          <select id="f-progress">
+            <option value="未开始">未开始</option>
+            <option value="进行中">进行中</option>
+            <option value="已完成">已完成</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>工时（小时）</label>
+          <input id="f-hours" type="number" min="0" max="24" step="0.5" placeholder="自动识别" />
+        </div>
+      </div>
+      <div class="field">
+        <label>关联任务（自动智能匹配，可手动指定）</label>
+        <select id="f-task"><option value="">智能匹配</option></select>
+      </div>
+      <button class="fill-submit" id="f-submit">提交日志</button>
+      <p class="fill-tip">提交后自动写入当前项目的 AI 表格；完成情况与工时会覆盖自动识别结果。</p>
+      <div class="ok-card" id="ok-card"><b>✓</b><span id="ok-text">记录成功</span></div>
+    </div>
+  </div>
+
+  <!-- 桌宠 -->
+  <div id="pet">
+    <img src="../assets/ai-assistant.png" alt="秒建功" draggable="false" />
+    <span class="pet-name">秒建功</span>
+  </div>
+  <div id="bubble">你好，我是秒建功 💪<br />点我对话 · 右键切项目</div>
+
+  <!-- 设置 -->
+  <div id="settings">
+    <div class="set-card">
+      <h3>设置</h3>
+      <p class="sub">服务器地址与桌面令牌：令牌在钉钉「设置」页生成（管理员），身份绑定生成者。</p>
+      <div class="field">
+        <label>服务器地址</label>
+        <input id="s-server" placeholder="http://101.37.210.127" />
+      </div>
+      <div class="field">
+        <label>桌面令牌</label>
+        <input id="s-token" placeholder="在钉钉「设置 → 桌面版·秒建功」生成并粘贴" />
+      </div>
+      <div class="set-actions">
+        <button class="btn-plain" id="s-cancel">取消</button>
+        <button class="btn-primary" id="s-save">保存并连接</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

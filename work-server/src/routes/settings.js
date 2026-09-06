@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { v4 as uuid } from 'uuid'
 import { get as getSettings, getAI, getTable, getAsr, update, AI_PROVIDERS } from '../services/settings.js'
 import { config } from '../config.js'
 import { listAllRecords as fetchTableRecords, listTasks as fetchTasks } from '../services/dingtalk-table.js'
@@ -111,6 +112,58 @@ router.put(
 
     update(patch)
     ok(res, getSettings(), '配置已更新并生效')
+  }),
+)
+
+/**
+ * GET /api/desktop-token 查询桌面端令牌状态（仅管理员；不回显完整令牌，只回显前后片段）
+ */
+router.get(
+  '/desktop-token',
+  asyncRoute(async (req, res) => {
+    if (!req.user.isAdmin) return fail(res, '仅管理员可管理桌面端令牌', 403)
+    const d = getSettings().desktop || {}
+    ok(res, {
+      created: Boolean(d.token),
+      masked: d.token ? `${d.token.slice(0, 6)}…${d.token.slice(-4)}` : '',
+      name: d.name || '',
+      userId: d.userId || '',
+      createdAt: d.createdAt || 0,
+    })
+  }),
+)
+
+/**
+ * POST /api/desktop-token 生成桌面端令牌（仅管理员；绑定生成者身份，旧令牌立即作废）
+ */
+router.post(
+  '/desktop-token',
+  asyncRoute(async (req, res) => {
+    if (!req.user.isAdmin) return fail(res, '仅管理员可管理桌面端令牌', 403)
+    const token = uuid().replaceAll('-', '') + uuid().replaceAll('-', '').slice(0, 8)
+    update({
+      desktop: {
+        token,
+        userId: req.user.userId,
+        name: req.user.name,
+        unionId: req.user.unionId || '',
+        createdAt: Date.now(),
+      },
+    })
+    console.log(`[settings] 管理员 ${req.user.userId} 生成桌面端令牌`)
+    ok(res, { token, name: req.user.name }, '桌面端令牌已生成，请立即复制到桌面版「设置」中（仅本次显示）')
+  }),
+)
+
+/**
+ * DELETE /api/desktop-token 撤销桌面端令牌（仅管理员）
+ */
+router.delete(
+  '/desktop-token',
+  asyncRoute(async (req, res) => {
+    if (!req.user.isAdmin) return fail(res, '仅管理员可管理桌面端令牌', 403)
+    update({ desktop: { token: '', userId: '', name: '', unionId: '', createdAt: 0 } })
+    ok(res, null, '桌面端令牌已撤销')
   }),
 )
 

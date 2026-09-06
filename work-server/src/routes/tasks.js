@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { getTable } from '../services/settings.js'
 import * as table from '../services/dingtalk-table.js'
+import { syncDirectiveStatus } from '../services/directive.js'
 import { asyncRoute, fail, ok } from '../utils/respond.js'
 
 const router = Router()
@@ -99,6 +100,10 @@ router.post(
     if (!isOwnerOf(task, req.user)) return fail(res, '仅任务负责人可修改状态', 403)
 
     await table.updateTaskStatus(req.params.id, status, req.user.unionId || '', pid)
+    // 任务状态变更 → 同步关联领导指令的状态（含逾期判定；fire-and-forget 不阻断响应）
+    syncDirectiveStatus(pid, req.params.id, status, task.planDate).catch((err) =>
+      console.warn('[directive] 状态同步失败:', err?.message),
+    )
     ok(res, { recordId: req.params.id, status })
   }),
 )

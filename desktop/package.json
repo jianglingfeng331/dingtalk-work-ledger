@@ -1,0 +1,76 @@
+{
+  "name": "miaojianong-desktop",
+  "productName": "秒建功",
+  "version": "1.0.0",
+  "description": "秒建功 · 工作台账桌面助手（桌宠对话/自然语言填报/项目切换）",
+  "main": "main.js",
+  "author": "workapp",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac dmg --arm64 --x64",
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist": "npm run dist:mac && npm run dist:win"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.workapp.miaojianong",
+    "productName": "秒建功",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "afterSign": "scripts/notarize.cjs",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
+    "icon": "assets/icon.png",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "LSUIElement": true
+      },
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "秒建功"
+    }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

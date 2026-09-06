@@ -20,7 +20,7 @@ const buckets = new Map()
 function bucketOf(projectId) {
   const key = projectId || '_'
   if (!buckets.has(key))
-    buckets.set(key, { records: null, tasks: null, members: null, taskFields: null, linkColType: null })
+    buckets.set(key, { records: null, tasks: null, members: null, taskFields: null, linkColType: null, directives: null })
   return buckets.get(key)
 }
 /** 项目内某桶缓存失效（写成功后调用） */
@@ -141,6 +141,7 @@ async function writeRecord(record, operatorId, projectId) {
 
   let linkValue = null // null=不关联；string=任务名；object=linkedRecordIds
   let isNativeLink = false
+  let linkedTaskRecordId = '' // 实际写入的关联任务记录ID（供指令进展同步联动，未成功写关联时保持空）
   try {
     if (record.taskId) {
       // 用户在页面显式选择了任务：直接按记录ID关联，跳过智能匹配
@@ -148,6 +149,7 @@ async function writeRecord(record, operatorId, projectId) {
       if (picked) {
         isNativeLink = await isLinkColumn(operatorId, projectId)
         linkValue = isNativeLink ? { linkedRecordIds: [picked.recordId] } : picked.title
+        linkedTaskRecordId = picked.recordId
       } else {
         console.warn('[table] 所选任务不存在（可能已被删除），本次不关联')
       }
@@ -157,6 +159,7 @@ async function writeRecord(record, operatorId, projectId) {
       if (hit) {
         isNativeLink = await isLinkColumn(operatorId, projectId)
         linkValue = isNativeLink ? { linkedRecordIds: [hit.recordId] } : hit.title
+        linkedTaskRecordId = hit.recordId
       }
     }
   } catch (err) {
@@ -178,12 +181,14 @@ async function writeRecord(record, operatorId, projectId) {
     }, 2)
 
   try {
-    return await post(build())
+    const data = await post(build())
+    return { data, linkedTaskRecordId }
   } catch (err) {
     if (linkValue == null) throw err
     console.warn('[table] 含关联任务写入失败，降级普通写入:', err?.response?.data?.message || err?.message)
     linkValue = null
-    return await post(build())
+    const data = await post(build())
+    return { data, linkedTaskRecordId: '' } // 关联列写入失败：无任务联动
   }
 }
 
@@ -374,9 +379,11 @@ export function updateTaskStatus(recordId, status, operatorId, projectId = '') {
 }
 
 /**
- * 计划写入任务表：{title, ownerUnionId, ownerName, planDate('YYYY-MM-DD'), category}
+ * 计划写入任务表：{title, ownerUnionId, ownerName, planDate('YYYY-MM-DD'), category, memberUnionIds[]}
  * 状态默认「未开始」；负责人user列缺unionId时跳过该列（不阻断）
+ * 参与人列（存在时）写多选用户：领导下达指令的多负责人 → 首位为负责人、其余为参与人
  * clientToken 幂等：补推重发不会在任务表产生重复行
+ * 返回创建成功的任务记录ID（用于指令表↔任务表强关联；响应里取不到时回查兜底）
  */
 async function writePlanRecord(plan, operatorId, clientToken, projectId) {
   const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
@@ -385,6 +392,9 @@ async function writePlanRecord(plan, operatorId, clientToken, projectId) {
     状态: plan.status || '未开始',
   }
   if (plan.ownerUnionId) fields.负责人 = [{ unionId: plan.ownerUnionId }]
+  if (Array.isArray(plan.memberUnionIds) && plan.memberUnionIds.length) {
+    fields.参与人 = plan.memberUnionIds.filter(Boolean).map((unionId) => ({ unionId }))
+  }
   if (plan.planDate) fields.计划节点 = plan.planDate
   if (plan.category) fields.任务分类 = plan.category
   const q = clientToken ? `&clientToken=${encodeURIComponent(clientToken)}` : ''
@@ -393,7 +403,17 @@ async function writePlanRecord(plan, operatorId, clientToken, projectId) {
     2,
   )
   invalidate(projectId, 'tasks') // 写入成功后失效任务缓存，任务页立即可见
-  return data
+  return { data, recordId: pickCreatedRecordId(data) }
+}
+
+/** 从新增记录响应中提取新行记录ID（不同接口版本字段结构不同，逐一兼容） */
+function pickCreatedRecordId(data) {
+  const tryList = (arr) => (Array.isArray(arr) && arr.length ? String(arr[0]?.id ?? arr[0]?.recordId ?? '') : '')
+  return (
+    tryList(data?.records) ||
+    tryList(data?.value) ||
+    (Array.isArray(data?.recordIds) && data.recordIds.length ? String(data.recordIds[0]) : '')
+  )
 }
 
 /** 计划写入（导出）：权限兜底后写入 */
@@ -509,3 +529,126 @@ async function fetchAllRecords({ force = false, operatorId, projectId = '' } = {
 export function listAllRecords(opts = {}) {
   return withPermFallback(opts.operatorId, opts.projectId, (op) => fetchAllRecords({ ...opts, operatorId: op }))
 }
+
+/* ===================== 领导指令表 ===================== */
+
+// 指令表列名（建表时的标准表头）
+const DIR_COLS = {
+  title: '任务名称',
+  raisedAt: '提出日期', // 日期时间列：写毫秒时间戳
+  owners: '负责人', // user多选：写 [{unionId},...]
+  deadline: '办结时限', // 日期列：'YYYY-MM-DD'
+  status: '状态', // 单选：未开始/进行中/已完成/已延期
+  progress: '执行进展', // 文本/富文本
+}
+
+const DIRECTIVE_STATUSES = ['未开始', '进行中', '已完成', '已延期']
+const DIRECTIVE_SHEET = (projectId = '') => {
+  const t = getTable(projectId)
+  return `https://api.dingtalk.com/v1.0/notable/bases/${t.baseId}/sheets/${encodeURIComponent(t.directiveSheetName || '领导指令表')}`
+}
+
+/** 指令行 → 业务对象 */
+function rowToDirective(row) {
+  const f = row.fields || {}
+  const ownersRaw = f[DIR_COLS.owners]
+  const owners = Array.isArray(ownersRaw) ? ownersRaw.map((m) => m?.name).filter(Boolean) : []
+  const ownerUnionIds = Array.isArray(ownersRaw) ? ownersRaw.map((m) => m?.unionId).filter(Boolean) : []
+  const st = f[DIR_COLS.status]
+  const raisedRaw = f[DIR_COLS.raisedAt]
+  return {
+    recordId: row.id,
+    title: toText(f[DIR_COLS.title]),
+    raisedAt: typeof raisedRaw === 'number' ? fmtDateTimeStr(new Date(raisedRaw)) : toPlainDate(raisedRaw),
+    owners,
+    ownerUnionIds,
+    deadline: toPlainDate(f[DIR_COLS.deadline]),
+    status: st?.name ?? (toText(st) || '未开始'),
+    progress: toText(f[DIR_COLS.progress]),
+  }
+}
+
+const pad2 = (n) => String(n).padStart(2, '0')
+const fmtDateTimeStr = (d) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+
+/** 指令表全量拉取（30秒缓存 + force 强刷），提出日期倒序 */
+async function fetchDirectives(operatorId, projectId = '', { force = false } = {}) {
+  const b = bucketOf(projectId)
+  if (!force && b.directives && Date.now() < b.directives.expireAt) return b.directives.list
+
+  const t = getTable(projectId)
+  const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
+  const list = []
+  let nextToken = ''
+  do {
+    let query = `operatorId=${op}&maxResults=100`
+    if (nextToken) query += `&nextToken=${encodeURIComponent(nextToken)}`
+    const { data } = await withRetry(
+      async () => HTTP.get(`${DIRECTIVE_SHEET(projectId)}/records?${query}`, { headers: await headers() }),
+      2,
+    )
+    for (const row of data?.records || []) {
+      const d = rowToDirective(row)
+      if (d.title.trim()) list.push(d)
+    }
+    nextToken = data?.nextToken || ''
+  } while (nextToken)
+
+  list.sort((a, b2) => String(b2.raisedAt).localeCompare(String(a.raisedAt)))
+  b.directives = { list, expireAt: Date.now() + 30_000 }
+  return list
+}
+
+/** 指令表全量（导出）：权限兜底后拉取 */
+export function listDirectives(operatorId, projectId = '', opts = {}) {
+  return withPermFallback(operatorId, projectId, (op) => fetchDirectives(op, projectId, opts))
+}
+
+/** 新增指令行：{title, raisedAt(ms), ownerUnionIds[], deadline, status, progress}，clientToken 幂等
+ *  返回新行记录ID */
+async function writeDirective(d, operatorId, clientToken, projectId) {
+  const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
+  const fields = {
+    [DIR_COLS.title]: d.title,
+    [DIR_COLS.raisedAt]: Number(d.raisedAt) || Date.now(),
+    [DIR_COLS.deadline]: d.deadline,
+    [DIR_COLS.status]: DIRECTIVE_STATUSES.includes(d.status) ? d.status : '未开始',
+  }
+  if (Array.isArray(d.ownerUnionIds) && d.ownerUnionIds.length) {
+    fields[DIR_COLS.owners] = d.ownerUnionIds.filter(Boolean).map((unionId) => ({ unionId }))
+  }
+  if (d.progress) fields[DIR_COLS.progress] = d.progress
+  const q = clientToken ? `&clientToken=${encodeURIComponent(clientToken)}` : ''
+  const { data } = await withRetry(
+    async () =>
+      HTTP.post(`${DIRECTIVE_SHEET(projectId)}/records?operatorId=${op}${q}`, { records: [{ fields }] }, { headers: await headers() }),
+    2,
+  )
+  invalidate(projectId, 'directives')
+  return pickCreatedRecordId(data)
+}
+
+/** 新增指令（导出）：权限兜底后写入，返回新行记录ID */
+export function addDirective(d, operatorId, clientToken, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => writeDirective(d, op, clientToken, projectId))
+}
+
+/** 更新指令行字段（执行进展/状态同步用）：fields 为 {列名: 值} */
+async function updateDirectiveRow(recordId, fields, operatorId, projectId = '') {
+  const op = encodeURIComponent(requireOperatorId(operatorId, projectId))
+  const { data } = await withRetry(
+    async () =>
+      HTTP.put(`${DIRECTIVE_SHEET(projectId)}/records?operatorId=${op}`, { records: [{ id: recordId, fields }] }, { headers: await headers() }),
+    2,
+  )
+  invalidate(projectId, 'directives')
+  return data
+}
+
+/** 更新指令（导出）：权限兜底后更新 */
+export function updateDirectiveFields(recordId, fields, operatorId, projectId = '') {
+  return withPermFallback(operatorId, projectId, (op) => updateDirectiveRow(recordId, fields, op, projectId))
+}
+
+export { DIRECTIVE_STATUSES, DIR_COLS, fmtDateTimeStr }

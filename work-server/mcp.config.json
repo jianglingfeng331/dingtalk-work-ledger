@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "工作台账 AI 查询 MCP 服务配置。集成模式：与 work-server 同进程，挂载 /mcp 路径（共享内存数据、AI 配置与会话鉴权）。敏感值一律走环境变量，本文件不含任何密钥。",
+
+  "service": {
+    "name": "work-ledger-mcp",
+    "displayName": "工作台账 AI 查询 MCP 服务",
+    "version": "1.0.0",
+    "description": "基于 MCP 协议（Streamable HTTP 无状态模式）的 AI 查询服务：三级缓存优先命中实现秒级响应，AI 直答兜底",
+    "env": "production",
+    "mode": "integrated",
+    "protocol": {
+      "type": "mcp",
+      "version": "2025-06-18",
+      "transports": ["streamable-http"],
+      "endpoint": "/mcp",
+      "sessionMode": "stateless",
+      "responseMode": "json"
+    },
+    "process": {
+      "manager": "pm2",
+      "appName": "work-server",
+      "hostApp": "work-server（同进程）",
+      "maxMemoryMb": 512,
+      "maxRestarts": 10,
+      "gracefulShutdownMs": 8000
+    }
+  },
+
+  "ai": {
+    "provider": "zhipu",
+    "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+    "model": "glm-4-flash-250414",
+    "fallbackModels": ["glm-4.7-flash"],
+    "parameters": {
+      "temperature": 0.3,
+      "maxTokens": 1024,
+      "stream": false,
+      "thinking": "disabled"
+    },
+    "timeouts": {
+      "singleRequestMs": 15000,
+      "totalBudgetMs": 45000
+    },
+    "retries": {
+      "maxAttempts": 3,
+      "backoffMs": [0, 2000, 4000],
+      "retryOn": ["429", "1305", "empty-content", "timeout"],
+      "fallbackOnFinalFailure": "switch-model"
+    },
+    "embedding": {
+      "model": "embedding-2",
+      "timeoutMs": 5000,
+      "vectorCacheTtlMs": 1800000
+    }
+  },
+
+  "performance": {
+    "sla": {
+      "l1CacheHitMs": 5,
+      "semanticHitMs": 300,
+      "dataToolMs": 50,
+      "aiDirectMs": "3000-15000（首次未命中）"
+    },
+    "concurrency": {
+      "maxInflightAi": 50,
+      "strategy": "fast-reject（不排队，超限立即返回繁忙提示）"
+    },
+    "rateLimit": {
+      "type": "token-bucket",
+      "capacity": 30,
+      "refillPerMinute": 30,
+      "scope": "per-user"
+    },
+    "circuitBreaker": {
+      "enabled": true,
+      "window": "最近20次调用",
+      "errorThreshold": 0.5,
+      "openMs": 15000
+    }
+  },
+
+  "network": {
+    "server": {
+      "host": "0.0.0.0",
+      "port": 3001,
+      "sharedWith": "work-server（HTTP API + H5 静态资源）",
+      "publicBaseUrl": "http://101.37.210.127:3001/mcp",
+      "maxRequestBodyBytes": 65536
+    },
+    "tls": {
+      "enabled": false,
+      "terminateAt": "nginx（可选）"
+    },
+    "cors": "复用 work-server 全局 CORS 策略（同源 + 白名单）"
+  },
+
+  "cache": {
+    "strategy": "three-tier",
+    "l1Memory": {
+      "enabled": true,
+      "maxEntries": 2000,
+      "eviction": "FIFO",
+      "dataToolTtlMs": 60000,
+      "aiAnswerTtlMs": 300000
+    },
+    "l2Redis": {
+      "enabled": false,
+      "reason": "单进程集成部署，内存缓存即够；未来多实例时再启用"
+    },
+    "semanticCache": {
+      "enabled": true,
+      "embeddingModel": "embedding-2",
+      "similarityThreshold": 0.92,
+      "ttlMs": 1800000,
+      "maxVectors": 5000,
+      "appliesTo": ["ai_query"]
+    },
+    "keyStrategy": {
+      "normalize": ["full-width-to-half", "lowercase", "trim", "collapse-whitespace"],
+      "namespaceBy": ["tool", "userId", "isAdmin", "projectId"]
+    },
+    "invalidation": {
+      "trigger": "store.addRecord 写入时全量失效（进程内直调）",
+      "onWorkLogWrite": true
+    }
+  },
+
+  "security": {
+    "auth": {
+      "mode": "bearer",
+      "channels": {
+        "serviceToken": {
+          "tokenSource": "env:MCP_AUTH_TOKEN",
+          "identity": "mcp-service（admin，供 AI 客户端/网关接入）"
+        },
+        "appSession": {
+          "tokenSource": "/api/login 颁发的会话 token",
+          "identity": "真实用户（权限与 H5 一致，管理员判定实时生效）"
+        }
+      },
+      "projectContext": "x-project-id 头或 ?projectId= 参数，缺省第一个项目"
+    },
+    "rbac": {
+      "admin": ["全部工具 + team=true 全员数据"],
+      "member": ["全部工具，数据范围自动限定为本人"]
+    },
+    "input": {
+      "maxBodyBytes": 65536,
+      "schemaValidation": "zod（参数类型/枚举不合法直接拒绝）"
+    },
+    "audit": {
+      "enabled": true,
+      "channel": "console（pm2 日志采集）",
+      "fields": ["ts", "user", "tool", "durationMs", "cache", "status"]
+    },
+    "secrets": {
+      "strategy": "env-only",
+      "required": ["ZHIPU_API_KEY（设置页配置，动态生效）", "MCP_AUTH_TOKEN（可选，启用服务账号通道）"]
+    }
+  },
+
+  "tools": [
+    {
+      "name": "ai_query",
+      "description": "自然语言 AI 查询（三级缓存：L1 精确 5 分钟 → 语义向量 30 分钟 → AI 直答）",
+      "cache": { "l1TtlMs": 300000, "semantic": true, "semanticTtlMs": 1800000 }
+    },
+    {
+      "name": "get_work_records",
+      "description": "查询工作日志（L1 缓存 60s）",
+      "cache": { "l1TtlMs": 60000 }
+    },
+    {
+      "name": "get_work_stats",
+      "description": "台账统计概览（L1 缓存 60s）",
+      "cache": { "l1TtlMs": 60000 }
+    },
+    {
+      "name": "get_tasks",
+      "description": "查询任务表（L1 缓存 60s）",
+      "cache": { "l1TtlMs": 60000 }
+    },
+    {
+      "name": "get_members",
+      "description": "查询项目成员（L1 缓存 60s）",
+      "cache": { "l1TtlMs": 60000 }
+    }
+  ],
+
+  "observability": {
+    "health": "/mcp/health",
+    "healthPublic": true,
+    "metrics": "/mcp/metrics",
+    "metricsFormat": "prometheus",
+    "metricsAuth": "本机回环地址免鉴权，外部需有效凭证",
+    "keyMetrics": ["mcp_requests_total", "mcp_cache_hits_total", "mcp_ai_calls_total", "mcp_duration_ms{p95,p99}"]
+  }
+}

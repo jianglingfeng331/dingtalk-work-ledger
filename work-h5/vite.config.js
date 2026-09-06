@@ -10,6 +10,11 @@ export default defineConfig({
     // Vant 组件按需自动引入（含样式）
     Components({ resolvers: [VantResolver()] }),
   ],
+  build: {
+    // 不清空旧构建产物：钉钉webview可能缓存旧版index.html，其引用的旧哈希JS必须继续存在，
+    // 否则旧缓存用户首进白屏。部署到服务器时同样勿删 assets 下的旧文件（增量覆盖）。
+    emptyOutDir: false,
+  },
   css: {
     postcss: {
       plugins: [
@@ -21,6 +26,8 @@ export default defineConfig({
           selectorBlackList: ['.ignore-vw'],
           minPixelValue: 1,
           mediaQuery: false,
+          // 桌面端页面/组件不转 vw，保持 px（电脑上 1vw 过大会把整页放大数倍）
+          exclude: [/QuickFillPage/, /WebSettingsPage/, /AiAssistant/],
         }),
       ],
     },

@@ -41,6 +41,51 @@
           transform: rotate(360deg);
         }
       }
+      /* 桌面端页面（body.quick-desktop，由 App.vue 按路由打标）下：
+         vant 的 Toast/Dialog 渲染到 body，其样式经 px→vw 适配在电脑上会被放大数倍，此处统一固定为 px */
+      body.quick-desktop .van-toast {
+        font-size: 14px;
+        line-height: 20px;
+        padding: 12px 20px;
+        border-radius: 8px;
+        min-width: 0;
+        box-shadow: 0 4px 16px rgba(31, 45, 61, 0.16);
+      }
+      body.quick-desktop .van-toast .van-toast__text {
+        font-size: 14px;
+      }
+      body.quick-desktop .van-toast .van-loading__spinner {
+        width: 24px;
+        height: 24px;
+      }
+      body.quick-desktop .van-dialog {
+        width: 400px;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      body.quick-desktop .van-dialog__header {
+        padding: 20px 24px 0;
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 24px;
+      }
+      body.quick-desktop .van-dialog__message {
+        padding: 10px 24px 24px;
+        font-size: 14px;
+        line-height: 22px;
+      }
+      body.quick-desktop .van-dialog__footer {
+        display: flex;
+      }
+      body.quick-desktop .van-dialog__footer .van-button {
+        height: 46px;
+        font-size: 14px;
+        flex: 1;
+      }
+      body.quick-desktop .van-dialog__confirm {
+        color: #1677ff;
+        font-weight: 600;
+      }
       .boot-retry {
         display: none;
         margin-top: 4px;
@@ -69,11 +114,51 @@
     </div>
     <script type="module" src="/src/main.js"></script>
     <script>
-      // 启动超时兜底：12 秒仍未完成 Vue 挂载（弱网/资源加载失败），显示重试按钮而非无限白屏
-      setTimeout(function () {
-        var el = document.getElementById('boot')
-        if (el) el.className = 'boot slow'
-      }, 12000)
+      // 钉钉webview首进白屏自愈（HTML级兜底，不依赖任何外部JS）：
+      // 钉钉冷启动可能直接使用本地缓存的旧版 index.html（无视 no-cache 响应头），
+      // 其引用的旧哈希 JS 已被新构建删除 → 入口脚本加载失败 → 什么JS都不执行 → 纯白屏，
+      // 只能手动刷新。这里监听入口脚本加载失败，自动换URL强制回源拿新版 HTML；
+      // sessionStorage 防刷新循环，仍失败则由下方12s重试按钮人工兜底。
+      // 注意用"拼时间戳换URL"而非 location.reload()：部分钉钉webview对 reload 仍命中本地缓存。
+      ;(function () {
+        function bustReload() {
+          var search = location.search.replace(/([?&])_r=\d+&?/, '$1').replace(/[?&]$/, '')
+          location.replace(location.pathname + search + (search ? '&' : '?') + '_r=' + Date.now() + location.hash)
+        }
+        var entry = document.querySelector('script[type="module"][src]')
+        if (!entry) return
+        entry.addEventListener('error', function () {
+          try {
+            localStorage.setItem(
+              'work_last_entry_error',
+              JSON.stringify({ time: new Date().toLocaleString(), src: entry.getAttribute('src') }),
+            )
+            if (!sessionStorage.getItem('work_entry_reloaded')) {
+              sessionStorage.setItem('work_entry_reloaded', '1')
+              bustReload()
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        })
+        // 启动超时兜底：12 秒仍未完成 Vue 挂载（弱网/资源加载失败），显示重试按钮；
+        // 15 秒仍白屏则自动换URL刷新一次自愈（同上防循环），免去用户手动刷新
+        setTimeout(function () {
+          var el = document.getElementById('boot')
+          if (el) el.className = 'boot slow'
+        }, 12000)
+        setTimeout(function () {
+          if (!document.getElementById('boot')) return
+          try {
+            if (!sessionStorage.getItem('work_boot_reloaded')) {
+              sessionStorage.setItem('work_boot_reloaded', '1')
+              bustReload()
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        }, 15000)
+      })()
     </script>
   </body>
 </html>

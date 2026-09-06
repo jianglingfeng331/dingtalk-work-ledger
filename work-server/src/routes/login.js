@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { config } from '../config.js'
 import { getUserByAuthCode, signJsapi } from '../services/dingtalk.js'
 import { createSession } from '../services/session.js'
+import { getPairedDesktopUser } from '../services/desktop-pair.js'
 import { isAdmin, get as getSettings, update as updateSettings } from '../services/settings.js'
 import { fixRecorderName } from '../services/store.js'
 import { asyncRoute, fail, ok } from '../utils/respond.js'
@@ -37,6 +38,29 @@ router.post(
         console.log('[login] 已自动记录管理员UnionId作为AI表格操作人')
       }
       console.log(`[login] 免登成功: ${user.userId}(${user.name})`)
+    } else if (req.body?.desktopToken) {
+      const given = String(req.body.desktopToken)
+      // 1. 扫码配对签发的个人长期凭据（每个桌面端使用者独立身份，权限与钉钉会话一致）
+      const paired = getPairedDesktopUser(given)
+      if (paired) {
+        user = { ...paired }
+        user.isAdmin = isAdmin(user.userId, user.source)
+        console.log(`[login] 桌面端配对登录: ${user.userId}(${user.name})`)
+      } else if (getSettings().desktop?.token && given === getSettings().desktop.token) {
+        // 2. 旧版管理员全局桌面令牌（保留兼容，身份绑定生成者）
+        const d = getSettings().desktop
+        user = {
+          userId: d.userId,
+          name: d.name || '桌面端',
+          unionId: d.unionId || '',
+          source: 'desktop',
+          isAdmin: isAdmin(d.userId, 'desktop'),
+        }
+        if (!user.isAdmin) return fail(res, '桌面令牌绑定的用户已不是管理员', 403)
+        console.log(`[login] 桌面端令牌登录: ${user.userId}(${user.name})`)
+      } else {
+        return fail(res, '桌面端令牌无效，请使用钉钉扫码登录或在钉钉「设置」页重新生成', 401)
+      }
     } else if (!config.dingtalkEnabled || config.allowDevLogin) {
       // 演示模式本地用户为管理员；正式模式访客仅普通权限（只能看本人数据，不能管理设置/项目）
       user = {
