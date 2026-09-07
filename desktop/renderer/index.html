@@ -221,6 +221,21 @@
       font-family: inherit; height: 56px; line-height: 1.55; outline: none; background: #fff;
     }
     .fill-ta:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.14); }
+    /* 润色按钮（四芒星，定位在 textarea 右上角） */
+    .fill-ta-wrap { position: relative; }
+    .enrich-btn {
+      position: absolute; top: 4px; right: 4px; z-index: 2;
+      border: none; background: rgba(0, 0, 0, 0.06); cursor: pointer; color: rgba(60, 60, 67, 0.6);
+      width: 22px; height: 22px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; padding: 0;
+      transition: all 0.15s;
+    }
+    .enrich-btn svg { width: 13px; height: 13px; }
+    .enrich-btn:hover { background: rgba(0, 122, 255, 0.12); color: #007aff; }
+    .enrich-btn:active { transform: scale(0.9); }
+    .enrich-btn.loading { background: rgba(0, 122, 255, 0.12); color: #007aff; pointer-events: none; }
+    .enrich-btn.loading svg { animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .field-row { display: flex; gap: 7px; }
     .field { flex: 1; }
     .field label { display: block; font-size: 11px; color: rgba(60, 60, 67, 0.6); margin-bottom: 3px; }
@@ -331,7 +346,12 @@
     <button class="card-close" id="btn-fill-close" title="关闭">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
     </button>
-    <textarea class="fill-ta" id="f-content" placeholder="用大白话描述，如：完成了智慧会议系统部署，花了3小时"></textarea>
+    <div class="fill-ta-wrap">
+      <textarea class="fill-ta" id="f-content" placeholder="用大白话描述，如：完成了智慧会议系统部署，花了3小时"></textarea>
+      <button class="enrich-btn" id="f-enrich" title="智能润色">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+      </button>
+    </div>
     <div class="parse-card" id="parse-card"></div>
     <div class="field-row">
       <div class="field">

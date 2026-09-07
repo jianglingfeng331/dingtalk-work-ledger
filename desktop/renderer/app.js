@@ -573,9 +573,10 @@ async function loadTasksOnce() {
     // 成功才置位：失败保持未加载，下次打开主菜单/面板时自动重试
     tasksLoaded = true
     updateTaskCount(tasksCache.length)
-    tasksCache.forEach((t) => {
+    // 填报关联任务列表只显示未完成的（已完成的无需再记日志）
+    tasksCache.filter((t) => t.status !== '已完成').forEach((t) => {
       const opt = document.createElement('option')
-      opt.value = t.id
+      opt.value = t.recordId // 任务记录ID，提交时按此精确关联
       opt.textContent = `${t.title}（${t.status}）`
       fTask.appendChild(opt)
     })
@@ -612,6 +613,29 @@ fContent.addEventListener('input', () => {
     }
   }, 600)
 })
+
+/* 智能润色：口语化 → 通顺书面记录（AI 优先，失败降级规则整理） */
+const fEnrich = $('f-enrich')
+fEnrich.onclick = async () => {
+  const content = fContent.value.trim()
+  if (!content) return toast('先写点什么再润色')
+  if (!(await ensureLogin())) { openLogin(); return toast('请先登录') }
+  fEnrich.classList.add('loading')
+  try {
+    const r = await enrichWork(content)
+    if (r.content && r.content.trim() && r.content.trim() !== content) {
+      fContent.value = r.content.trim()
+      fContent.dispatchEvent(new Event('input')) // 触发预解析回填
+      toast(r.source === 'ai' ? 'AI 润色完成' : '已整理')
+    } else {
+      toast('润色无变化，原文已通顺')
+    }
+  } catch (e) {
+    toast(e.message || '润色失败')
+  } finally {
+    fEnrich.classList.remove('loading')
+  }
+}
 
 $('f-submit').onclick = async () => {
   const content = fContent.value.trim()

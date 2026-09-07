@@ -176,6 +176,11 @@ async function submitWork(content, overrides, taskId) {
   return request('/api/submit-work', { method: 'POST', body: { content, overrides, taskId } })
 }
 
+/** 智能润色（口语化工作描述 → 通顺书面记录） */
+async function enrichWork(content) {
+  return request('/api/enrich-work', { method: 'POST', body: { content } })
+}
+
 /** 项目 AI 表格地址 */
 function tableUrl(baseId) {
   return `https://alidocs.dingtalk.com/i/nodes/${baseId}`
