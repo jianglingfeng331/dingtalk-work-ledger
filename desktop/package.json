@@ -24,6 +24,7 @@
     "directories": {
       "output": "release"
     },
+    "afterPack": "scripts/adhoc-sign.cjs",
     "afterSign": "scripts/notarize.cjs",
     "files": [
       "main.js",

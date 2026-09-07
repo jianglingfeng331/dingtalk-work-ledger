@@ -216,22 +216,22 @@
 
     /* ============ 填报日志卡（独立弹层，矮卡紧凑） ============ */
     #panel-fill { z-index: 21; padding: 0 12px 12px; gap: 7px; }
+    /* wrap 撑满宽度，textarea 100% 继承，四芒星浮动在内部右上角 */
+    .fill-ta-wrap { position: relative; display: block; width: 100%; }
     .fill-ta {
       resize: none; border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 10px; padding: 8px 10px; font-size: 12.5px;
-      font-family: inherit; height: 56px; line-height: 1.55; outline: none; background: #fff;
+      font-family: inherit; height: 56px; line-height: 1.55; outline: none; background: #fff; width: 100%;
     }
     .fill-ta:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.14); }
-    /* 润色按钮（四芒星，定位在 textarea 右上角） */
-    .fill-ta-wrap { position: relative; }
     .enrich-btn {
       position: absolute; top: 4px; right: 4px; z-index: 2;
-      border: none; background: rgba(0, 0, 0, 0.06); cursor: pointer; color: rgba(60, 60, 67, 0.6);
+      border: none; background: rgba(255, 255, 255, 0.92); cursor: pointer; color: rgba(60, 60, 67, 0.45);
       width: 22px; height: 22px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center; padding: 0;
-      transition: all 0.15s;
+      transition: all 0.15s; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     }
-    .enrich-btn svg { width: 13px; height: 13px; }
-    .enrich-btn:hover { background: rgba(0, 122, 255, 0.12); color: #007aff; }
+    .enrich-btn svg { width: 12.5px; height: 12.5px; }
+    .enrich-btn:hover { background: rgba(0, 122, 255, 0.12); color: #007aff; box-shadow: 0 1px 5px rgba(0, 122, 255, 0.25); }
     .enrich-btn:active { transform: scale(0.9); }
     .enrich-btn.loading { background: rgba(0, 122, 255, 0.12); color: #007aff; pointer-events: none; }
     .enrich-btn.loading svg { animation: spin 0.8s linear infinite; }
