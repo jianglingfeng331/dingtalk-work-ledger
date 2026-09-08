@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src *" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; connect-src *" />
   <title>秒建功</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
@@ -22,7 +22,7 @@
       cursor: pointer;
       z-index: 10;
     }
-    #pet img {
+    #pet img, #pet canvas {
       width: 108px;
       height: 108px;
       object-fit: contain;
@@ -30,8 +30,17 @@
       animation: breathe 3.2s ease-in-out infinite;
       transition: transform 0.2s;
     }
-    #pet:hover img { transform: scale(1.06); }
-    #pet.dragging img { animation: none; transform: scale(1.02) rotate(-3deg); }
+    /* 动作视频画布：平时隐藏，播放时代替静态图片；不拦截鼠标（点击仍落在角色上） */
+    #pet canvas { display: none; pointer-events: none; }
+    #pet.acting img { display: none; }
+    #pet.acting canvas { display: block; }
+    /* 隐藏的视频源：移出屏幕但保持解码（display:none 可能暂停解码） */
+    #pet-video {
+      position: fixed; left: -9999px; top: 0; width: 2px; height: 2px;
+      opacity: 0; pointer-events: none;
+    }
+    #pet:hover img, #pet:hover canvas { transform: scale(1.06); }
+    #pet.dragging img, #pet.dragging canvas { animation: none; transform: scale(1.02) rotate(-3deg); }
     @keyframes breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
     #pet .pet-name {
       margin: 4px 0 2px;
@@ -424,6 +433,8 @@
   <!-- 桌宠 -->
   <div id="pet">
     <img src="../assets/ai-assistant.png" alt="秒建功" draggable="false" />
+    <canvas id="pet-canvas"></canvas>
+    <video id="pet-video" muted playsinline preload="auto"></video>
     <span class="pet-name">秒建功</span>
   </div>
 
@@ -441,6 +452,13 @@
         </div>
       </div>
       <div class="qm-group">
+        <button class="qm-row" id="s-video-pick">
+          <span class="qm-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></span>
+          <span class="qm-txt">动作视频…</span>
+        </button>
+        <button class="qm-row qm-row-text" id="s-video-reset">恢复默认动作视频</button>
+      </div>
+      <div class="qm-group">
         <button class="qm-row danger" id="s-logout" style="display:none"><span class="qm-txt" style="padding-left:4px">退出登录</span></button>
         <button class="qm-row qm-row-text" id="s-cancel">关闭</button>
       </div>
@@ -450,6 +468,7 @@
   <div id="toast"></div>
 
   <script src="api.js"></script>
+  <script src="pet-video.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 // 秒建功 · 主进程：透明置顶桌宠窗口 + 原生右键菜单 + 窗口拖动 + 托盘
-const { app, BrowserWindow, Menu, Tray, screen, ipcMain, shell, nativeImage } = require('electron')
+const { app, BrowserWindow, Menu, Tray, screen, ipcMain, shell, nativeImage, dialog } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const QRCode = require('qrcode')
 
 // 收起态：仅角色尺寸；展开态：铺满工作区（透明区域鼠标穿透，卡片可在屏幕任意位置拖动）
@@ -100,6 +101,10 @@ ipcMain.on('context-menu', (_e, { projects, currentId, projectName }) => {
       label: 'AI 表格',
       click: () => win.webContents.send('menu-open-table'),
     },
+    {
+      label: '动作视频…',
+      click: () => win.webContents.send('menu-pick-video'),
+    },
     { type: 'separator' },
     {
       label: '账号…',
@@ -129,6 +134,47 @@ ipcMain.handle('qr-dataurl', async (_e, text) => {
   } catch {
     return ''
   }
+})
+
+/* ============ 桌宠动作视频（绿幕抠像动画） ============ */
+// 自定义视频复制进 userData（原文件被移动/删除也不影响），配置仅记录路径与名称
+const videoCfgPath = () => path.join(app.getPath('userData'), 'action-video.json')
+function readVideoCfg() {
+  try { return JSON.parse(fs.readFileSync(videoCfgPath(), 'utf8')) } catch { return null }
+}
+/** 读取当前动作视频字节流：用户自定义优先，否则用内置默认 */
+function readActionVideo() {
+  const cfg = readVideoCfg()
+  let file = cfg?.path && fs.existsSync(cfg.path) ? cfg.path : path.join(__dirname, 'assets', 'action.mp4')
+  if (!fs.existsSync(file)) return { ok: false, name: cfg?.name || '' }
+  const buf = fs.readFileSync(file)
+  return {
+    ok: true,
+    name: cfg?.path === file ? cfg.name : '默认动作视频',
+    data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), // ArrayBuffer，IPC 结构化克隆
+  }
+}
+ipcMain.handle('action-video:get', () => {
+  try { return readActionVideo() } catch (e) { return { ok: false, error: e.message } }
+})
+ipcMain.handle('action-video:pick', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: '选择绿幕动作视频',
+    filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'webm', 'm4v'] }],
+    properties: ['openFile'],
+  })
+  if (r.canceled || !r.filePaths?.[0]) return { ok: false, canceled: true }
+  const src = r.filePaths[0]
+  const ext = path.extname(src).toLowerCase() || '.mp4'
+  const dest = path.join(app.getPath('userData'), `action-video${ext}`)
+  fs.copyFileSync(src, dest)
+  const name = path.basename(src)
+  fs.writeFileSync(videoCfgPath(), JSON.stringify({ path: dest, name }))
+  try { return readActionVideo() } catch (e) { return { ok: false, error: e.message } }
+})
+ipcMain.handle('action-video:clear', () => {
+  try { fs.unlinkSync(videoCfgPath()) } catch { /* 无配置即默认 */ }
+  try { return readActionVideo() } catch (e) { return { ok: false, error: e.message } }
 })
 
 function createTray() {

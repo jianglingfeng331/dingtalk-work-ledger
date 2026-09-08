@@ -21,6 +21,7 @@ function toast(text) {
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => t.classList.remove('show'), 2200)
 }
+window.toast = toast // 供 pet-video.js 等模块复用
 
 /* ============ 桌宠：拖动 / 点击 / 右键 ============ */
 let drag = null
