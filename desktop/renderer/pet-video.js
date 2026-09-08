@@ -1,7 +1,8 @@
-/* ============ 桌宠动作视频：绿幕抠像 + 随机 1-3 分钟自动播放 ============
+/* ============ 桌宠动作视频：背景抠像 + 随机 1-3 分钟自动播放 ============
  * 方案：隐藏 <video> 解码 → requestAnimationFrame 逐帧 drawImage 到小尺寸 canvas →
- * 逐像素绿幕抠像（绿色显著高于红/蓝 → 透明，边缘羽化去绿边）。
- * 桌宠显示尺寸仅 108px，逐帧像素处理开销可忽略；播放时鼠标事件穿透 canvas，不干扰操作。
+ * 自动识别背景类型（暗底/绿幕/纯色），用「边缘洪水填充」抠除背景：
+ * 只有与画面边缘连通的背景像素变透明，角色内部的深色部分（眼睛、轮廓线）保留。
+ * 桌宠显示尺寸仅 108px，逐帧处理开销可忽略；canvas 不拦截鼠标，不干扰桌面操作。
  */
 ;(function () {
   const pet = document.getElementById('pet')
@@ -14,11 +15,13 @@
   canvas.width = DISPLAY * DPR
   canvas.height = DISPLAY * DPR
 
-  // 绿幕阈值（greenness = 绿色通道 - max(红,蓝)）
-  const GREEN_CUT = 30 // 大于 → 完全透明（纯绿幕，降低阈值让暗绿也抠掉）
-  const GREEN_SOFT = 8 // 大于 → 边缘羽化半透明 + 去绿边
-  const MIN_GREEN = 40 // 绿色通道低于此值不判定（保护深色衣服/头发）
-  const SPILL_CUT = 12 // 去绿溢：绿色比红蓝高出此值时，把绿色压到 max(红,蓝)
+  // 背景判定阈值
+  const LUMA_HARD = 95 // 亮度低于此值 → 暗背景像素
+  const LUMA_SOFT = 150 // 低于此值且紧邻透明区 → 边缘半透明
+  const GREEN_HARD = 28 // greenness 高于此值 → 绿幕像素
+  const GREEN_SOFT = 10
+  const CHROMA_HARD = 70 // 与背景色距离小于此值 → 纯色背景
+  const CHROMA_SOFT = 110
 
   let rafId = 0
   let scheduleTimer = 0
@@ -43,7 +46,53 @@
     scheduleNext()
   })
 
-  /** 逐帧：等比 contain 绘制 + 绿幕抠像 */
+  /** 采样画面边框像素，识别背景类型：luma（暗底）/ green（绿幕）/ chroma（其他纯色） */
+  function detectMode(d, w, h) {
+    let rS = 0, gS = 0, bS = 0, lumS = 0, greenS = 0, cnt = 0
+    const sample = (x, y) => {
+      const i = (y * w + x) * 4
+      const r = d[i], g = d[i + 1], b = d[i + 2]
+      rS += r; gS += g; bS += b
+      lumS += 0.299 * r + 0.587 * g + 0.114 * b
+      greenS += g - Math.max(r, b)
+      cnt++
+    }
+    for (let x = 0; x < w; x += 4) { sample(x, 0); sample(x, h - 1) }
+    for (let y = 0; y < h; y += 4) { sample(0, y); sample(w - 1, y) }
+    const avgLum = lumS / cnt
+    const avgGreen = greenS / cnt
+    if (avgLum < 90) return { mode: 'luma' }
+    if (avgGreen > 25) return { mode: 'green' }
+    return { mode: 'chroma', bg: [rS / cnt, gS / cnt, bS / cnt] }
+  }
+
+  /** 像素是否属于「硬背景」（会被洪水填充抠除）：暗底/绿幕/纯色底任一命中即可 */
+  function isHardBg(r, g, b, bg) {
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if (lum < LUMA_HARD) return true
+    if (g - Math.max(r, b) > GREEN_HARD) return true
+    if (bg) {
+      const dr = r - bg[0], dg = g - bg[1], db = b - bg[2]
+      if (dr * dr + dg * dg + db * db < CHROMA_HARD * CHROMA_HARD) return true
+    }
+    return false
+  }
+  /** 像素是否属于「软背景」（紧邻透明区时半透明羽化 + 去色边） */
+  function isSoftBg(r, g, b, bg) {
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if (lum < LUMA_SOFT) return true
+    if (g - Math.max(r, b) > GREEN_SOFT) return true
+    if (bg) {
+      const dr = r - bg[0], dg = g - bg[1], db = b - bg[2]
+      if (dr * dr + dg * dg + db * db < CHROMA_SOFT * CHROMA_SOFT) return true
+    }
+    return false
+  }
+  function isGreenish(r, g, b) {
+    return g - Math.max(r, b) > GREEN_SOFT
+  }
+
+  /** 逐帧：等比 contain 绘制 + 边缘洪水填充抠像 */
   function drawFrame() {
     if (!acting) return
     const cw = canvas.width
@@ -58,21 +107,44 @@
       ctx.drawImage(video, (cw - dw) / 2, (ch - dh) / 2, dw, dh)
       const img = ctx.getImageData(0, 0, cw, ch)
       const d = img.data
-      for (let i = 0; i < d.length; i += 4) {
-        const g = d[i + 1]
-        if (g < MIN_GREEN) continue
-        const r = d[i]
-        const b = d[i + 2]
-        const greenness = g - Math.max(r, b)
-        if (greenness > GREEN_CUT) {
-          d[i + 3] = 0 // 纯绿幕 → 全透明
-        } else if (greenness > GREEN_SOFT) {
-          const t = (greenness - GREEN_SOFT) / (GREEN_CUT - GREEN_SOFT) // 0..1
-          d[i + 3] = Math.round(d[i + 3] * (1 - t)) // 边缘羽化
-          d[i + 1] = Math.max(r, b) // 压掉绿色溢出（去绿边）
-        } else if (greenness > SPILL_CUT) {
-          // 非边缘但仍有绿溢：把绿色压到 max(红,蓝)
-          d[i + 1] = Math.max(r, b)
+      const n = cw * ch
+      const { bg } = detectMode(d, cw, ch)
+
+      // 1) 标记硬背景像素
+      const hard = new Uint8Array(n)
+      for (let p = 0; p < n; p++) {
+        const i = p * 4
+        if (isHardBg(d[i], d[i + 1], d[i + 2], bg)) hard[p] = 1
+      }
+      // 2) 从四条边开始洪水填充：仅与边缘连通的硬背景变透明
+      //    （角色内部的深色区域如眼睛、轮廓线被亮区包围，不会被抠到）
+      const reached = new Uint8Array(n)
+      const stack = []
+      for (let x = 0; x < cw; x++) { stack.push(x, (ch - 1) * cw + x) }
+      for (let y = 0; y < ch; y++) { stack.push(y * cw, y * cw + cw - 1) }
+      while (stack.length) {
+        const p = stack.pop()
+        if (reached[p] || !hard[p]) continue
+        reached[p] = 1
+        const x = p % cw
+        if (x > 0) stack.push(p - 1)
+        if (x < cw - 1) stack.push(p + 1)
+        if (p >= cw) stack.push(p - cw)
+        if (p < n - cw) stack.push(p + cw)
+      }
+      // 3) 应用透明 + 边缘羽化（软背景像素紧邻透明区 → 半透明，绿色像素同时去绿溢）
+      for (let p = 0; p < n; p++) {
+        const i = p * 4
+        if (reached[p]) { d[i + 3] = 0; continue }
+        const x = p % cw
+        const nearTransparent =
+          (x > 0 && reached[p - 1]) || (x < cw - 1 && reached[p + 1]) ||
+          (p >= cw && reached[p - cw]) || (p < n - cw && reached[p + cw])
+        if (nearTransparent && isSoftBg(d[i], d[i + 1], d[i + 2], bg)) {
+          d[i + 3] = Math.round(d[i + 3] * 0.45)
+        }
+        if (isGreenish(d[i], d[i + 1], d[i + 2])) {
+          d[i + 1] = Math.max(d[i], d[i + 2]) // 去绿溢
         }
       }
       ctx.putImageData(img, 0, 0)
