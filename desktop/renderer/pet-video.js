@@ -15,9 +15,10 @@
   canvas.height = DISPLAY * DPR
 
   // 绿幕阈值（greenness = 绿色通道 - max(红,蓝)）
-  const GREEN_CUT = 52 // 大于 → 完全透明（纯绿幕）
-  const GREEN_SOFT = 22 // 大于 → 边缘羽化半透明 + 去绿边
-  const MIN_GREEN = 80 // 绿色通道低于此值不判定（保护深色衣服/头发）
+  const GREEN_CUT = 30 // 大于 → 完全透明（纯绿幕，降低阈值让暗绿也抠掉）
+  const GREEN_SOFT = 8 // 大于 → 边缘羽化半透明 + 去绿边
+  const MIN_GREEN = 40 // 绿色通道低于此值不判定（保护深色衣服/头发）
+  const SPILL_CUT = 12 // 去绿溢：绿色比红蓝高出此值时，把绿色压到 max(红,蓝)
 
   let rafId = 0
   let scheduleTimer = 0
@@ -69,6 +70,9 @@
           const t = (greenness - GREEN_SOFT) / (GREEN_CUT - GREEN_SOFT) // 0..1
           d[i + 3] = Math.round(d[i + 3] * (1 - t)) // 边缘羽化
           d[i + 1] = Math.max(r, b) // 压掉绿色溢出（去绿边）
+        } else if (greenness > SPILL_CUT) {
+          // 非边缘但仍有绿溢：把绿色压到 max(红,蓝)
+          d[i + 1] = Math.max(r, b)
         }
       }
       ctx.putImageData(img, 0, 0)
